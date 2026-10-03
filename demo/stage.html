@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Friend Finder Demo</title>
+<style>
+/*
+  Scripted demo of the real index.html. Served by mock-server.js at /demo.
+  Designed for a 1920x1080 frame; scales to fit any window.
+*/
+:root {
+  --ink: #000; --paper: #f2f4f7; --dim: #a3a9b4; --rule: #23262c;
+  --cold: #5aa9ff; --warm: #ffb000; --hot: #fff1d6; --lost: #7a808c; --sos: #ff3b30;
+  --display: "Avenir Next Condensed", "sans-serif-condensed", "Roboto Condensed", "Arial Narrow", system-ui, sans-serif;
+  --body: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--ink); color: var(--paper); overflow: hidden; }
+body { font: 28px/1.4 var(--body); -webkit-font-smoothing: antialiased; }
+
+.stage { position: absolute; left: 50%; top: 50%; width: 1920px; height: 1080px; transform-origin: 50% 50%; }
+
+/* phone */
+.phone {
+  position: absolute; left: 300px; top: 82px; width: 418px; height: 916px;
+  border-radius: 64px; background: #0c0d10; padding: 14px;
+  box-shadow: 0 0 0 2px #2a2d33, 0 0 0 9px #0c0d10, 0 0 0 10px #2a2d33, 0 40px 120px rgba(0,0,0,.8);
+}
+.phone iframe { width: 390px; height: 844px; border: 0; border-radius: 50px; background: #000; display: block; }
+.finger {
+  position: absolute; width: 64px; height: 64px; margin: -32px 0 0 -32px; border-radius: 50%;
+  background: rgba(242,244,247,.28); border: 3px solid rgba(242,244,247,.9);
+  opacity: 0; transition: left .6s cubic-bezier(.3,.7,.2,1), top .6s cubic-bezier(.3,.7,.2,1), opacity .3s, transform .15s;
+  pointer-events: none; z-index: 5;
+}
+.finger.down { transform: scale(.8); background: rgba(242,244,247,.55); }
+
+/* narration */
+.copy { position: absolute; left: 860px; top: 150px; width: 900px; }
+.count { font-size: 24px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.copy h1 {
+  font-family: var(--display); font-weight: 700; font-stretch: condensed;
+  font-size: 112px; line-height: .92; letter-spacing: -.01em; margin: 14px 0 26px;
+}
+.copy p { margin: 0; max-width: 30em; color: var(--dim); font-size: 30px; }
+.swap { transition: opacity .35s, transform .35s; }
+.swap.out { opacity: 0; transform: translateY(12px); }
+
+/* venue strip: where the two people actually are */
+.venue { position: absolute; left: 860px; top: 690px; width: 900px; height: 230px; }
+.floor { position: absolute; left: 0; right: 0; top: 104px; height: 2px; background: var(--rule); }
+.crowd i { position: absolute; width: 14px; height: 14px; border-radius: 50%; background: #1b1e24; }
+.person { position: absolute; top: 88px; width: 34px; height: 34px; margin-left: -17px; border-radius: 50%; }
+.person b { position: absolute; top: 44px; left: 50%; transform: translateX(-50%); font-size: 22px; font-weight: 700; white-space: nowrap; }
+#you { left: 30px; background: var(--paper); }
+#friend b { top: -38px; }
+#friend { left: 860px; background: var(--cold); box-shadow: 0 0 30px var(--cold); transition: opacity .5s, background .4s, box-shadow .4s; }
+#friend.gone { opacity: .15; }
+.wall {
+  position: absolute; left: 700px; top: 40px; width: 90px; height: 120px; border-radius: 8px;
+  background: #15171c; border: 2px solid var(--rule); opacity: 0; transition: opacity .5s;
+  display: grid; place-items: center; font-size: 20px; color: var(--dim);
+}
+.wall.on { opacity: 1; }
+.span { position: absolute; top: 196px; height: 2px; background: var(--dim); opacity: .6; }
+.span::before, .span::after { content: ""; position: absolute; top: -8px; width: 2px; height: 18px; background: var(--dim); }
+.span::before { left: 0; } .span::after { right: 0; }
+.dist {
+  position: absolute; top: -26px; transform: translateX(-50%); background: var(--ink); padding: 0 14px;
+  font-family: var(--display); font-weight: 700; font-stretch: condensed; font-size: 40px; white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.dist small { font-family: var(--body); font-weight: 500; font-size: 22px; color: var(--dim); margin-left: 10px; }
+
+/* scene progress, it is a real sequence */
+.progress { position: absolute; left: 860px; top: 1000px; width: 900px; display: flex; gap: 8px; }
+.progress i { flex: 1; height: 4px; border-radius: 2px; background: var(--rule); overflow: hidden; }
+.progress i b { display: block; height: 100%; width: 0; background: var(--paper); }
+
+/* title and end cards sit over everything */
+.card {
+  position: absolute; inset: 0; z-index: 10; background: var(--ink);
+  display: flex; flex-direction: column; justify-content: center; padding: 0 0 0 300px;
+  transition: opacity .7s;
+}
+.card.hide { opacity: 0; pointer-events: none; }
+.card h1 { font-family: var(--display); font-weight: 700; font-stretch: condensed; font-size: 190px; line-height: .86; margin: 0; letter-spacing: -.02em; }
+.card h1 span { display: block; transition: color 1.2s; }
+.card p { font-size: 34px; color: var(--dim); margin: 34px 0 0; max-width: 28em; }
+</style>
+</head>
+<body>
+<div class="stage" id="stage">
+  <div class="phone" id="phone"><iframe id="app" title="App"></iframe></div>
+  <div class="finger" id="finger"></div>
+
+  <div class="copy swap" id="copy">
+    <div class="count" id="count"></div>
+    <h1 id="head"></h1>
+    <p id="body"></p>
+  </div>
+
+  <div class="venue" aria-hidden="true">
+    <div class="crowd" id="crowd"></div>
+    <div class="floor"></div>
+    <div class="wall" id="wall">Stage</div>
+    <div class="span" id="span"><div class="dist" id="dist"></div></div>
+    <div class="person" id="you"><b>You</b></div>
+    <div class="person" id="friend"><b>Alex</b></div>
+  </div>
+
+  <div class="progress" id="progress"></div>
+
+  <div class="card" id="title">
+    <h1><span>Find your friend</span><span id="titleWarm">in a crowd.</span></h1>
+    <p>Two ESP32 bracelets listen for each other's signal. Your phone turns it into one number.</p>
+  </div>
+  <div class="card hide" id="end">
+    <h1><span>No internet.</span><span style="color:var(--hot)">No app store.</span></h1>
+    <p>The bracelet serves the page over its own Wi-Fi. Open it, and you're tracking.</p>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  var sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+
+  // fit 1920x1080 into the window
+  function fit() {
+    var s = Math.min(innerWidth / 1920, innerHeight / 1080);
+    $('stage').style.transform = 'translate(-50%, -50%) scale(' + s + ')';
+  }
+  addEventListener('resize', fit); fit();
+
+  // ---------- venue strip ----------
+  var TRACK_X0 = 30, PX_PER_M = 22;          // "You" sits at x=30; 37 m fits the strip
+  (function crowd() {
+    var seed = 7, rnd = function () { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+    var html = '';
+    for (var i = 0; i < 70; i++) {
+      var x = 70 + rnd() * 820, y = 50 + rnd() * 110;
+      html += '<i style="left:' + x.toFixed(0) + 'px;top:' + y.toFixed(0) + 'px;opacity:' + (0.4 + rnd() * 0.6).toFixed(2) + '"></i>';
+    }
+    $('crowd').innerHTML = html;
+  })();
+
+  var world = { d: 35, feeding: false, hidden: false, rssiNow: null };
+  function rssiAt(d) {
+    var r = -45 - 26 * Math.log10(Math.max(d, 0.3)) + (Math.random() * 4 - 2);
+    return Math.round(Math.max(-95, Math.min(-35, r)));
+  }
+  var STATE_COLOR = { close: 'var(--hot)', near: 'var(--warm)', far: 'var(--cold)', lost: 'var(--lost)' };
+  function appColor() {
+    var s = appDoc && appDoc.body && appDoc.body.dataset.state;
+    return STATE_COLOR[s] || 'var(--lost)';
+  }
+  function drawVenue() {
+    var x = TRACK_X0 + world.d * PX_PER_M;
+    $('friend').style.left = x + 'px';
+    var c = appColor();
+    $('friend').style.background = c;
+    $('friend').style.boxShadow = '0 0 30px ' + c;
+    $('friend').classList.toggle('gone', world.hidden);
+    $('span').style.left = TRACK_X0 + 'px';
+    $('span').style.width = (x - TRACK_X0) + 'px';
+    $('dist').style.left = Math.max((x - TRACK_X0) / 2, 110) + 'px';
+    $('dist').innerHTML = world.hidden ? 'No signal'
+      : (world.d < 10 ? world.d.toFixed(1) : Math.round(world.d)) + ' m' + (world.rssiNow != null ? '<small>' + world.rssiNow + ' dBm</small>' : '');
+  }
+  function walkTo(d, ms) {
+    var from = world.d, t0 = performance.now();
+    return new Promise(function (done) {
+      (function step(now) {
+        var p = Math.min(1, (now - t0) / ms);
+        var e = p < .5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+        world.d = from + (d - from) * e;
+        drawVenue();
+        if (p < 1) requestAnimationFrame(step); else done();
+      })(t0);
+    });
+  }
+
+  // ---------- the real app, with a fake bracelet socket ----------
+  var app = null, appWin = null, appDoc = null;
+  var FAKE_WS = '<script>(function(){' +
+    'try{localStorage.clear()}catch(e){}' +
+    'function F(){var s=this;s.readyState=0;parent.__sock=s;setTimeout(function(){s.readyState=1;s.onopen&&s.onopen()},300)}' +
+    'F.prototype.send=function(d){parent.__sent&&parent.__sent(d)};F.prototype.close=function(){};' +
+    'window.WebSocket=F;})();<\/script>';
+  function push(o) { if (window.__sock && window.__sock.onmessage) window.__sock.onmessage({ data: JSON.stringify(o) }); }
+  window.__sent = function () {};
+
+  setInterval(function () {
+    if (!window.__sock) return;
+    push({ type: 'status', name: 'Alex', battery: 88, friendBattery: 64 });
+  }, 1000);
+  setInterval(drawVenue, 250);
+  setInterval(function () {
+    if (!world.feeding || world.hidden) return;
+    world.rssiNow = rssiAt(world.d);
+    push({ type: 'rssi', rssi: world.rssiNow });
+    drawVenue();
+  }, 150);
+
+  function loadApp() {
+    return fetch('/index.html').then(function (r) { return r.text(); }).then(function (html) {
+      app = $('app');
+      app.srcdoc = html.replace('<head>', '<head>' + FAKE_WS);
+      return new Promise(function (r) { app.onload = r; });
+    }).then(function () { appWin = app.contentWindow; appDoc = app.contentDocument; });
+  }
+
+  // ---------- finger ----------
+  function fingerTo(id) {
+    var el = appDoc.getElementById(id), r = el.getBoundingClientRect();
+    var phone = $('phone');
+    var x = phone.offsetLeft + 14 + r.left + r.width / 2;
+    var y = phone.offsetTop + 14 + r.top + r.height / 2;
+    var f = $('finger');
+    f.style.left = x + 'px'; f.style.top = y + 'px'; f.style.opacity = '1';
+    return sleep(650);
+  }
+  function fingerAway() { $('finger').style.opacity = '0'; $('finger').classList.remove('down'); }
+  async function tap(id) {
+    await fingerTo(id);
+    $('finger').classList.add('down'); await sleep(160);
+    appDoc.getElementById(id).click();
+    $('finger').classList.remove('down'); await sleep(250);
+  }
+  async function hold(id, ms) {
+    await fingerTo(id);
+    var el = appDoc.getElementById(id);
+    var PE = appWin.PointerEvent || appWin.MouseEvent;
+    $('finger').classList.add('down');
+    el.dispatchEvent(new PE('pointerdown', { bubbles: true, cancelable: true, pointerId: 1, button: 0, isPrimary: true }));
+    await sleep(ms);
+    el.dispatchEvent(new PE('pointerup', { bubbles: true, pointerId: 1, button: 0, isPrimary: true }));
+    $('finger').classList.remove('down');
+  }
+
+  // ---------- narration ----------
+  var SCENES = 5;
+  (function () { var h = ''; for (var i = 0; i < SCENES; i++) h += '<i><b id="pb' + i + '"></b></i>'; $('progress').innerHTML = h; })();
+  var sceneT0 = 0, sceneMs = 1, sceneIdx = -1;
+  (function tickProgress() {
+    if (sceneIdx >= 0) {
+      for (var i = 0; i < SCENES; i++) {
+        var w = i < sceneIdx ? 100 : i > sceneIdx ? 0 : Math.min(100, (performance.now() - sceneT0) / sceneMs * 100);
+        $('pb' + i).style.width = w + '%';
+      }
+    }
+    requestAnimationFrame(tickProgress);
+  })();
+  async function scene(i, ms, head, body) {
+    sceneIdx = i; sceneT0 = performance.now(); sceneMs = ms;
+    var c = $('copy');
+    c.classList.add('out'); await sleep(350);
+    $('count').textContent = (i + 1) + ' of ' + SCENES;
+    $('head').textContent = head;
+    $('body').textContent = body;
+    c.classList.remove('out');
+  }
+  function until(ms) { return sleep(Math.max(0, sceneT0 + ms - performance.now())); }
+
+  // ---------- the film ----------
+  async function run() {
+    drawVenue();
+    await loadApp();
+    world.feeding = true;
+    await sleep(1400);
+    $('titleWarm').style.color = 'var(--warm)';
+    await sleep(1900);
+    $('title').classList.add('hide');
+
+    // 1. hotter / colder
+    await scene(0, 13000, 'Hotter, colder.', 'Walk toward each other and the number climbs. Ice blue turns amber, then white-hot, and the glow pulses faster.');
+    await sleep(1500);
+    await walkTo(14, 3800);
+    await sleep(800);
+    await walkTo(0.8, 5200);
+    await until(13000);
+
+    // 2. signal lost
+    await scene(1, 13500, 'Out of range.', 'Alex walks behind the stage. After five seconds without a signal, the page shows how long it’s been.');
+    $('wall').classList.add('on');
+    await walkTo(31, 2600);
+    world.hidden = true; drawVenue();
+    await until(11800);
+    world.hidden = false; await walkTo(18, 1200);
+    await until(13500);
+
+    // 3. friend SOS
+    await scene(2, 10000, 'Alex needs help.', 'They hold the SOS button on their bracelet. Your phone flashes red and keeps showing how close they are.');
+    $('wall').classList.remove('on');
+    await sleep(800);
+    push({ type: 'sos' });
+    await walkTo(9, 3200);
+    await tap('btnAck');
+    fingerAway();
+    await walkTo(2.5, 3000);
+    await until(10000);
+    appDoc.getElementById('btnDismissFriendSos').click();
+
+    // 4. own SOS
+    await scene(3, 10000, 'Hold to send SOS.', 'One and a half seconds, so a bump in your pocket can’t set it off. You see the moment Alex gets it.');
+    await walkTo(16, 1500);
+    await hold('sosBtn', 1800);
+    fingerAway();
+    await sleep(2200);
+    push({ type: 'sos_ack' });
+    await walkTo(6, 3000);
+    await until(10000);
+    await tap('btnEndSos'); fingerAway();
+
+    // 5. calibration
+    await scene(4, 16500, 'Tuned to the room.', 'Concrete, crowds and bodies all soak up signal. Stand together, then step apart, and the phone learns what near and far mean here.');
+    await walkTo(0.6, 1500);
+    await tap('btnCal');
+    await tap('btnCalGo'); fingerAway();
+    await sleep(5400);
+    await walkTo(13, 2200);
+    await tap('btnCalGo'); fingerAway();
+    await sleep(5400);
+    await sleep(900);
+    await tap('btnCalGo'); fingerAway();
+    await walkTo(5, 1500);
+    await until(16500);
+
+    $('end').classList.remove('hide');
+    await sleep(4200);
+    window.__done = true;
+  }
+
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(function () { setTimeout(run, 400); });
+})();
+</script>
+</body>
+</html>
