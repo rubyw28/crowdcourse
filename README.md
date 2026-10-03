@@ -1,6 +1,10 @@
 # Crowdsource
 
-Bracelets that help friends find each other in a crowd. Each ESP32 bracelet listens for its friend's ESP-NOW radio signal (RSSI) and buzzes faster as they get closer, and either friend can send an SOS. A phone joins its bracelet's Wi-Fi hotspot and opens a page the bracelet serves, which shows a 0–100 closeness score, the SOS controls and a full-screen alert. No internet or app install is needed.
+Bracelets that help friends find each other when a crowd knocks out the usual tools: a dead battery, a jammed cell network, or a GPS dot that cannot tell "beside you" from "across the room." Each ESP32 listens for its friend's ESP-NOW radio signal (RSSI) and buzzes faster as they get closer, so you can keep your eyes on the people around you. Either friend can send an SOS, and it stays on until the other person acknowledges it. A phone joins its bracelet's Wi-Fi hotspot and opens a page the bracelet serves, which shows a 0–100 closeness score, the SOS controls and a full-screen alert. No internet, no account, and no app install. A borrowed phone is enough.
+
+The people this is for are the ones a crowd separates: a friend who can't look down at a map, someone whose phone died, a pair trying to leave a show together. The band is the search. The laptop dashboard is only for whoever is trying to help them.
+
+The closeness score is fit to this pair, not to a universal radio curve. Calibration records how the two bracelets sound when they stand together and when they step apart. After that, a slow change means someone is walking closer or farther. A sharp drop, while the beacons keep arriving, is scored as a person stepping between them, and the number holds instead of telling you your friend left.
 
 On top of that offline core, a bracelet plugged into a laptop streams everything it hears into a Tiger Data (Postgres + TimescaleDB) database. The online features read from it: an organizer dashboard, an iMessage agent and the sponsor integrations, which are in progress.
 
@@ -79,6 +83,45 @@ Each bracelet broadcasts a 28-byte beacon 10 times a second on Wi-Fi channel 6: 
 | `readings` (hypertable) | Every beacon heard: `time`, `bracelet`, `friend`, `rssi`, about 10 rows per second per pair. |
 | `events` (hypertable) | `paired`, `lost` / `found`, `my_sos`, `my_sos_acked`, `my_sos_end`, `friend_sos`, `friend_sos_acked`, `friend_sos_end`, `phone`, `calibrate`, with extra fields in `detail` (jsonb). |
 | `readings_10s` (continuous aggregate) | Average RSSI and packet count per 10 s, refreshed by TimescaleDB every 10 s. The dashboard charts from this. |
+
+## Organizer dashboard
+
+With `DATABASE_URL` in `.env`:
+
+```sh
+npm run web            # http://localhost:8787
+```
+
+The page charts closeness from the `readings_10s` continuous aggregate, lists incidents, and times how long a pair took to get from far back to very close. These read Tiger Data only. Finding a friend and sending SOS still work on the bracelet with the laptop closed.
+
+## Aid station (Raspberry Pi)
+
+The Pi is the table at the edge of the crowd: the place a friend, or event staff, watches who is apart and who raised an SOS. It does not find anyone. The bracelets still do that over ESP-NOW, with no Pi and no internet.
+
+Put the project on the Pi (Node 20 or newer), copy `.env` onto it, and install there so the serial library builds for that machine:
+
+```sh
+npm install
+npm run station          # bridge + dashboard, http://<pi-address>:8787
+```
+
+Plug **one** bracelet into the Pi's USB port and leave it there. The other bracelet is the one that walks. On the Pi, your user needs access to the serial port (`sudo usermod -aG dialout $USER`, then log out and back in). The port is usually `/dev/ttyUSB0`.
+
+Open the dashboard from any phone on the **same network as the Pi**. A phone joined to a bracelet's hotspot cannot see the Pi. If the venue Wi-Fi blocks device-to-device traffic, have the Pi and the helper's phone share a phone hotspot instead.
+
+If the station bracelet also has a camera on a 64-bit Pi, the Presage check-in at `/checkin` can run there: `npm install @smartspectra/node-sdk` and set `PRESAGE_API_KEY`. Video stays on the Pi. Only the pulse and breathing numbers are stored.
+
+The same server turns on the sponsor pieces when the matching key is in `.env` (names are in `.env.example`):
+
+| Route | Needs |
+|---|---|
+| Ask box, and iMessage replies | `GEMINI_API_KEY` |
+| `POST /api/photon` | `npm install spectrum-ts`, then Photon project id, secret, and webhook secret. Point Spectrum at `https://<your tunnel>/api/photon` |
+| Speak with ElevenLabs / Speak with Grok | `ELEVENLABS_API_KEY` / `XAI_API_KEY` |
+| Award Crowd Hero | nothing (Solana devnet; wallet is created in `.keys/`) |
+| Responder check-in at `/checkin` | `PRESAGE_API_KEY` and `npm install @smartspectra/node-sdk` |
+
+An SOS event (`my_sos`) texts `EMERGENCY_CONTACTS` when Photon is configured. Register the public site with GoDaddy Registry using code `MLHBRH2699`, then serve this process behind that domain.
 
 The firmware sends telemetry as one JSON object per serial line, prefixed with `@` so it can share the port with the human-readable log:
 

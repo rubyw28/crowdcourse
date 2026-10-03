@@ -34,6 +34,14 @@ static const char *AP_PASSWORD = "";        // open hotspot; 8+ chars to enable 
 static const int BUTTON_PIN = 0;            // BOOT button. Hold 1.5 s to start or end SOS
 static const int HAPTIC_PIN = 2;            // vibration motor driver, or the onboard LED as a stand-in
 static const int BATTERY_PIN = -1;          // ADC pin on a 1:2 divider from the LiPo, or -1 if not wired
+
+// Pins left open for extra hardware. Taken: 0 (SOS button), 1 and 3 (USB serial
+// telemetry — do not touch), 2 (haptic). Also leave 6–11 alone (flash) and avoid
+// 12 (it is read at boot). Free and safe: 4, 5, 13–19, 21–23, 25–27, 32, 33.
+// A sensible add-on set, matching crowd_source/'s wiring: NeoPixel data on 13,
+// buzzer on 25, a second button on 27, OLED on the default I2C pins 21 (SDA) and 22 (SCL).
+// Add parts in setup() and loop() below the radio. Keep Beacon, GROUP_ID, and
+// WIFI_CHANNEL as they are, or the two bracelets stop hearing each other.
 static const bool HAPTIC_PROXIMITY = true;  // pulse faster as the friend gets closer
 
 static const uint32_t BEACON_MS = 100;
@@ -251,8 +259,13 @@ static void onPhoneMessage(AsyncWebSocketClient *client, const String &msg) {
     int n, f;
     if (jsonInt(msg, "near", n) && jsonInt(msg, "far", f) && n - f >= 5) {
       calNear = n; calFar = f;
+      int nearSpread = 0, farSpread = 0;
+      String extra = String("\"near\":") + calNear + ",\"far\":" + calFar;
+      if (jsonInt(msg, "nearSpread", nearSpread) && jsonInt(msg, "farSpread", farSpread)) {
+        extra += String(",\"nearSpread\":") + nearSpread + ",\"farSpread\":" + farSpread;
+      }
       Serial.printf("~ calibration near=%d far=%d\n", calNear, calFar);
-      emit("calibrate", String("\"near\":") + calNear + ",\"far\":" + calFar);
+      emit("calibrate", extra);
     }
   }
 }

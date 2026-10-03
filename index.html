@@ -132,6 +132,7 @@ body[data-state="lost"] .core { opacity: .06; }
   margin-top: 14px; transition: color .4s;
 }
 .rssi { font-size: 14px; color: var(--dim); font-variant-numeric: tabular-nums; margin-top: 6px; }
+.rssi.blocked { color: var(--warm); font-weight: 700; max-width: 22em; }
 
 /* SOS: the only big control on the page */
 .actions { position: relative; z-index: 2; display: flex; flex-direction: column; gap: 4px; padding-top: 12px; }
@@ -283,6 +284,7 @@ body[data-state="lost"] .core { opacity: .06; }
       <div class="score-cap">Closeness out of 100</div>
       <div class="label" id="label">Searching</div>
       <div class="rssi" id="rssiText">-- dBm</div>
+      <div class="rssi" id="motion"></div>
     </div>
   </main>
 
@@ -392,7 +394,8 @@ body[data-state="lost"] .core { opacity: .06; }
     openTimer: 0,
     lastMsgAt: 0,
     outbox: [],
-    samples: [],          // {r, t}
+    samples: [],          // {r, t} smoothing window
+    trace: [],            // {r, t} last 2.5 s, for the pair model
     lastRaw: null,
     lastRssiAt: 0,
     smoothed: null,
@@ -430,6 +433,8 @@ body[data-state="lost"] .core { opacity: .06; }
     S.lastRaw = r;
     S.lastRssiAt = t;
     S.samples.push({ r: r, t: t });
+    S.trace.push({ r: r, t: t });
+    while (S.trace.length && t - S.trace[0].t > 2500) S.trace.shift();
     trimSamples(t);
     var sum = 0;
     for (var i = 0; i < S.samples.length; i++) sum += S.samples[i].r;
@@ -443,11 +448,55 @@ body[data-state="lost"] .core { opacity: .06; }
     var c = cal();
     return clamp(100 * (rssi - c.far) / (c.near - c.far), 0, 100);
   }
+  var MOTION_TEXT = {
+    approaching: 'Getting closer',
+    leaving: 'Moving apart',
+    blocked: 'Someone is between you. Stay on this line.'
+  };
+  function motionOf(now) {
+    var window = S.trace.filter(function (s) { return now - s.t <= 2500; });
+    if (window.length < 6) return { motion: 'settling', text: '' };
+    var n = window.length, k = Math.max(1, n >> 2);
+    function avg(arr) {
+      var sum = 0;
+      for (var i = 0; i < arr.length; i++) sum += arr[i].r;
+      return sum / arr.length;
+    }
+    var early = avg(window.slice(0, k));
+    var late = avg(window.slice(n - k));
+    var t0 = window[0].t, st = 0, sr = 0, stt = 0, str = 0;
+    for (var j = 0; j < n; j++) {
+      var x = (window[j].t - t0) / 1000;
+      st += x; sr += window[j].r; stt += x * x; str += x * window[j].r;
+    }
+    var den = n * stt - st * st;
+    var slope = Math.abs(den) < 1e-6 ? 0 : (n * str - st * sr) / den;
+    var newest = window[n - 1].r;
+    var baselineArr = window.filter(function (s) { return now - s.t > 400 && now - s.t <= 1500; })
+      .map(function (s) { return s.r; }).sort(function (a, b) { return a - b; });
+    var baseline = baselineArr.length ? baselineArr[baselineArr.length >> 1] : newest;
+    var cliff = baseline - newest;
+    var cliffNeed = Math.max(12, (cal().nearSpread || 4) * 2);
+    var motion = 'steady';
+    if (baselineArr.length >= 3 && cliff >= cliffNeed && newest > cal().far + 3) motion = 'blocked';
+    else if (late - early >= 6 && slope >= 4) motion = 'approaching';
+    else if (early - late >= 4 && slope <= -3) motion = 'leaving';
+    return { motion: motion, text: MOTION_TEXT[motion] || '' };
+  }
   // Thresholds shift by HYST toward the current label so it doesn't flicker at the boundary.
   function labelFor(score, cur) {
     var cT = CFG.TH_CLOSE + (cur === 'close' ? -CFG.HYST : CFG.HYST);
     var nT = CFG.TH_NEAR + (cur === 'close' || cur === 'near' ? -CFG.HYST : CFG.HYST);
     return score >= cT ? 'close' : score >= nT ? 'near' : 'far';
+  }
+  function stdev(a) {
+    if (!a.length) return 0;
+    var m = 0, i;
+    for (i = 0; i < a.length; i++) m += a[i];
+    m /= a.length;
+    var v = 0;
+    for (i = 0; i < a.length; i++) v += (a[i] - m) * (a[i] - m);
+    return Math.sqrt(v / a.length);
   }
   function median(a) {
     var s = a.slice().sort(function (x, y) { return x - y; });
@@ -649,7 +698,7 @@ body[data-state="lost"] .core { opacity: .06; }
   // ---------- calibration ----------
   var CAL_TEXT = {
     near: { step: 'Step 1 of 2', title: 'Stand together', body: 'Stand right next to your friend, bracelets about an arm’s length apart. Press Start and hold still for 5 seconds.' },
-    far: { step: 'Step 2 of 2', title: 'Step apart', body: 'Walk apart to the distance that should count as “far” (about 10–15 m in a crowd). Press Start and hold still for 5 seconds.' }
+    far: { step: 'Step 2 of 2', title: 'Step apart', body: 'Walk apart to the distance that should count as far, about 10–15 m in a crowd. Press Start and hold still for 5 seconds. This teaches the band what your pair sounds like in this room.' }
   };
   function openCal() {
     S.calib = { step: 'near', collecting: false, start: 0, buf: [], near: null };
@@ -663,7 +712,9 @@ body[data-state="lost"] .core { opacity: .06; }
     setText($('calStep'), done ? 'Both steps done' : t.step);
     $('calDot2').className = c.step === 'near' ? '' : 'on';
     setText($('calTitle'), done ? 'Calibrated' : t.title);
-    setText($('calBody'), done ? 'Together reads ' + S.cal.near + ' dBm and apart reads ' + S.cal.far + ' dBm. Your bracelet uses these too.' : t.body);
+    setText($('calBody'), done
+      ? 'Learned this pair. Together is ' + S.cal.near + ' dBm and apart is ' + S.cal.far + ' dBm. A sudden drop counts as someone stepping between you, not your friend leaving.'
+      : t.body);
     $('calBarWrap').hidden = !c.collecting;
     $('calMsg').className = isErr ? 'err' : '';
     setText($('calMsg'), msg || '');
@@ -689,8 +740,10 @@ body[data-state="lost"] .core { opacity: .06; }
       return;
     }
     var med = Math.round(median(c.buf));
+    var spread = Math.max(1, Math.round(stdev(c.buf)));
     if (c.step === 'near') {
       c.near = med;
+      c.nearSpread = spread;
       c.step = 'far';
       renderCal('Together: ' + med + ' dBm. Now step apart.');
       return;
@@ -699,9 +752,9 @@ body[data-state="lost"] .core { opacity: .06; }
       renderCal('Only ' + (c.near - med) + ' dB weaker than together. Walk further apart and retry.', true);
       return;
     }
-    S.cal = { near: c.near, far: med };
+    S.cal = { near: c.near, far: med, nearSpread: c.nearSpread, farSpread: spread };
     store.set('cal', S.cal);
-    send({ type: 'calibrate', near: S.cal.near, far: S.cal.far });
+    send({ type: 'calibrate', near: S.cal.near, far: S.cal.far, nearSpread: S.cal.nearSpread, farSpread: S.cal.farSpread });
     c.step = 'done';
     renderCal('');
   }
@@ -751,7 +804,7 @@ body[data-state="lost"] .core { opacity: .06; }
   var els = {
     conn: $('conn'), connText: $('connText'), setConn: $('setConn'),
     name: $('friendName'), lastSeen: $('lastSeen'), friendBatt: $('friendBatt'), myBatt: $('myBatt'),
-    score: $('score'), label: $('label'), rssi: $('rssiText'), core: $('core'), ripple: $('ripple'),
+    score: $('score'), label: $('label'), rssi: $('rssiText'), motion: $('motion'), core: $('core'), ripple: $('ripple'),
     alertName: $('alertName'), alertScore: $('alertScore'), alertLabel: $('alertLabel'), alertSeen: $('alertSeen'),
     calRead: $('calRead'), sosSub: $('sosSub')
   };
@@ -780,12 +833,19 @@ body[data-state="lost"] .core { opacity: .06; }
     var ago = S.lastRssiAt ? now - S.lastRssiAt : Infinity;
     var lost = ago > CFG.LOST_MS || S.smoothed == null;
 
+    var move = motionOf(now);
+    if (move.motion === 'blocked') {
+      if (!S.blocking) { S.blocking = true; S.frozenScore = S.shownScore; }
+    } else {
+      S.blocking = false;
+    }
     if (!lost) {
-      var target = scoreOf(S.smoothed);
+      var target = S.blocking && S.frozenScore != null ? S.frozenScore : scoreOf(S.smoothed);
       S.shownScore = S.shownScore == null ? target : S.shownScore + (target - S.shownScore) * Math.min(1, dt * 5);
       S.label = labelFor(S.shownScore, S.label);
     } else {
       S.label = 'lost';
+      S.blocking = false;
     }
     if (document.body.dataset.state !== S.label) document.body.dataset.state = S.label;
     var heat = lost ? '0' : (S.shownScore / 100).toFixed(2);
@@ -801,6 +861,8 @@ body[data-state="lost"] .core { opacity: .06; }
     setText(els.score, scoreTxt);
     setText(els.label, labelTxt);
     setText(els.rssi, lost || S.smoothed == null ? '-- dBm' : Math.round(S.smoothed) + ' dBm avg');
+    setText(els.motion, lost ? '' : move.text);
+    els.motion.className = move.motion === 'blocked' ? 'rssi blocked' : 'rssi';
     setText(els.lastSeen, seenTxt);
     els.lastSeen.className = lost && S.lastRssiAt ? 'lost' : '';
     setText(els.name, S.friend);
