@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Records demo/stage.html to an MP4 using headless Chrome.
+// Records demo/stage.html to an MP4 using headless Chrome, then adds the soundtrack
+// (synthesized music + on-screen sound effects, see make_audio.py).
 //
 //   npm i --no-save puppeteer-core ffmpeg-static
 //   node demo/record.js [out.mp4]
@@ -22,12 +23,14 @@ const FPS = 30;
 
 (async () => {
   const mock = spawn(process.execPath, [path.join(ROOT, 'mock-server.js')], { env: { ...process.env, PORT: String(PORT) }, stdio: 'ignore' });
+  process.on('exit', () => mock.kill());
   await new Promise((r) => setTimeout(r, 800));
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'demo-frames-'));
   const browser = await puppeteer.launch({ executablePath: CHROME, headless: 'new', args: ['--hide-scrollbars', '--force-color-profile=srgb'] });
   const page = await browser.newPage();
   await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
+  page.on('pageerror', (e) => console.error('\npage error: ' + e.message));
 
   const cdp = await page.createCDPSession();
   const frames = [];
@@ -45,6 +48,7 @@ const FPS = 30;
   await page.waitForFunction('window.__done === true', { timeout: 180000, polling: 250 });
   clearInterval(tick);
   await cdp.send('Page.stopScreencast');
+  const events = await page.evaluate(() => window.__events || []);
   await browser.close();
   mock.kill();
   console.log(`\n${frames.length} frames captured`);
@@ -60,9 +64,25 @@ const FPS = 30;
   const r = spawnSync(ffmpeg, [
     '-y', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', path.join(dir, 'list.txt'),
     '-vf', `fps=${FPS},format=yuv420p`, '-c:v', 'libx264', '-preset', 'slow', '-crf', '18',
-    '-movflags', '+faststart', OUT,
+    '-movflags', '+faststart', path.join(dir, 'silent.mp4'),
+  ], { stdio: 'inherit' });
+  if (r.status !== 0) process.exit(r.status || 1);
+
+  // Soundtrack: cue times relative to the first frame.
+  const t0 = frames[0].t;
+  const duration = frames[frames.length - 1].t - t0 + 0.5;
+  fs.writeFileSync(path.join(dir, 'timeline.json'), JSON.stringify({
+    duration,
+    events: events.map((e) => ({ ...e, t: e.t - t0 })).filter((e) => e.t >= 0),
+  }));
+  const a = spawnSync('python3', [path.join(__dirname, 'make_audio.py'), path.join(dir, 'timeline.json'),
+    path.join(dir, 'audio.wav')], { stdio: 'inherit' });
+  if (a.status !== 0) process.exit(a.status || 1);
+  const m = spawnSync(ffmpeg, [
+    '-y', '-loglevel', 'error', '-i', path.join(dir, 'silent.mp4'), '-i', path.join(dir, 'audio.wav'),
+    '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', '-shortest', '-movflags', '+faststart', OUT,
   ], { stdio: 'inherit' });
   fs.rmSync(dir, { recursive: true, force: true });
-  if (r.status !== 0) process.exit(r.status || 1);
+  if (m.status !== 0) process.exit(m.status || 1);
   console.log('wrote ' + OUT);
 })().catch((e) => { console.error(e); process.exit(1); });

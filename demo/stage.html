@@ -113,12 +113,12 @@ body { font: 28px/1.4 var(--body); -webkit-font-smoothing: antialiased; }
   <div class="progress" id="progress"></div>
 
   <div class="card" id="title">
-    <h1><span>Find your friend</span><span id="titleWarm">in a crowd.</span></h1>
-    <p>Two ESP32 bracelets listen for each other's signal. Your phone turns it into one number.</p>
+    <h1><span id="titleWarm">Crowdsource.</span></h1>
+    <p>Find your friend in a crowd. Two ESP32 bracelets listen for each other’s signal, and your phone turns it into one number.</p>
   </div>
   <div class="card hide" id="end">
     <h1><span>No internet.</span><span style="color:var(--hot)">No app store.</span></h1>
-    <p>The bracelet serves the page over its own Wi-Fi. Open it, and you're tracking.</p>
+    <p>The bracelet serves this page over its own Wi-Fi. Join it, open the page, and you’re tracking.</p>
   </div>
 </div>
 
@@ -126,6 +126,13 @@ body { font: 28px/1.4 var(--body); -webkit-font-smoothing: antialiased; }
 (function () {
   'use strict';
   var $ = function (id) { return document.getElementById(id); };
+  // Sound cues with wall-clock times; demo/make_audio.py turns these into the soundtrack.
+  window.__events = [];
+  function cue(kind, extra) {
+    var e = { t: Date.now() / 1000, kind: kind };
+    for (var k in extra || {}) e[k] = extra[k];
+    window.__events.push(e);
+  }
   var sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
 
   // fit 1920x1080 into the window
@@ -205,6 +212,20 @@ body { font: 28px/1.4 var(--body); -webkit-font-smoothing: antialiased; }
     drawVenue();
   }, 150);
 
+  var ticking = false, lastRipple = 0;
+  (function watchPulse() {
+    if (ticking && appDoc) {
+      var m = /scale\(([\d.]+)\)/.exec(appDoc.getElementById('ripple').style.transform || '');
+      var s = m ? parseFloat(m[1]) : 0;
+      if (s && s < lastRipple - 0.5) {
+        var score = parseInt(appDoc.getElementById('score').textContent, 10);
+        if (!isNaN(score)) cue('tick', { heat: score / 100 });
+      }
+      lastRipple = s;
+    }
+    requestAnimationFrame(watchPulse);
+  })();
+
   function loadApp() {
     return fetch('/index.html').then(function (r) { return r.text(); }).then(function (html) {
       app = $('app');
@@ -226,7 +247,7 @@ body { font: 28px/1.4 var(--body); -webkit-font-smoothing: antialiased; }
   function fingerAway() { $('finger').style.opacity = '0'; $('finger').classList.remove('down'); }
   async function tap(id) {
     await fingerTo(id);
-    $('finger').classList.add('down'); await sleep(160);
+    $('finger').classList.add('down'); cue('tap'); await sleep(160);
     appDoc.getElementById(id).click();
     $('finger').classList.remove('down'); await sleep(250);
   }
@@ -235,6 +256,7 @@ body { font: 28px/1.4 var(--body); -webkit-font-smoothing: antialiased; }
     var el = appDoc.getElementById(id);
     var PE = appWin.PointerEvent || appWin.MouseEvent;
     $('finger').classList.add('down');
+    cue('hold', { ms: ms });
     el.dispatchEvent(new PE('pointerdown', { bubbles: true, cancelable: true, pointerId: 1, button: 0, isPrimary: true }));
     await sleep(ms);
     el.dispatchEvent(new PE('pointerup', { bubbles: true, pointerId: 1, button: 0, isPrimary: true }));
@@ -259,6 +281,7 @@ body { font: 28px/1.4 var(--body); -webkit-font-smoothing: antialiased; }
     var c = $('copy');
     c.classList.add('out'); await sleep(350);
     $('count').textContent = (i + 1) + ' of ' + SCENES;
+    cue('section', { id: 's' + i });
     $('head').textContent = head;
     $('body').textContent = body;
     c.classList.remove('out');
@@ -270,12 +293,15 @@ body { font: 28px/1.4 var(--body); -webkit-font-smoothing: antialiased; }
     drawVenue();
     await loadApp();
     world.feeding = true;
-    await sleep(1400);
+    await sleep(500);
+    cue('section', { id: 'title' });
+    await sleep(900);
     $('titleWarm').style.color = 'var(--warm)';
-    await sleep(1900);
+    await sleep(5100);
     $('title').classList.add('hide');
 
     // 1. hotter / colder
+    ticking = true;
     await scene(0, 13000, 'Hotter, colder.', 'Walk toward each other and the number climbs. Ice blue turns amber, then white-hot, and the glow pulses faster.');
     await sleep(1500);
     await walkTo(14, 3800);
@@ -292,13 +318,17 @@ body { font: 28px/1.4 var(--body); -webkit-font-smoothing: antialiased; }
     world.hidden = false; await walkTo(18, 1200);
     await until(13500);
 
+    ticking = false;
+
     // 3. friend SOS
     await scene(2, 10000, 'Alex needs help.', 'They hold the SOS button on their bracelet. Your phone flashes red and keeps showing how close they are.');
     $('wall').classList.remove('on');
     await sleep(800);
     push({ type: 'sos' });
+    cue('alarm_on');
     await walkTo(9, 3200);
     await tap('btnAck');
+    cue('alarm_off');
     fingerAway();
     await walkTo(2.5, 3000);
     await until(10000);
@@ -311,6 +341,7 @@ body { font: 28px/1.4 var(--body); -webkit-font-smoothing: antialiased; }
     fingerAway();
     await sleep(2200);
     push({ type: 'sos_ack' });
+    cue('chime');
     await walkTo(6, 3000);
     await until(10000);
     await tap('btnEndSos'); fingerAway();
@@ -319,18 +350,20 @@ body { font: 28px/1.4 var(--body); -webkit-font-smoothing: antialiased; }
     await scene(4, 16500, 'Tuned to the room.', 'Concrete, crowds and bodies all soak up signal. Stand together, then step apart, and the phone learns what near and far mean here.');
     await walkTo(0.6, 1500);
     await tap('btnCal');
-    await tap('btnCalGo'); fingerAway();
+    await tap('btnCalGo'); fingerAway(); cue('measure', { ms: 5000 });
     await sleep(5400);
     await walkTo(13, 2200);
-    await tap('btnCalGo'); fingerAway();
-    await sleep(5400);
-    await sleep(900);
+    await tap('btnCalGo'); fingerAway(); cue('measure', { ms: 5000 });
+    await sleep(5100);
+    cue('chime');
+    await sleep(1200);
     await tap('btnCalGo'); fingerAway();
     await walkTo(5, 1500);
     await until(16500);
 
     $('end').classList.remove('hide');
-    await sleep(4200);
+    cue('section', { id: 'end' });
+    await sleep(6500);
     window.__done = true;
   }
 
