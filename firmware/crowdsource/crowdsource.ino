@@ -92,6 +92,12 @@ static void sendAll(const String &msg) {
   if (ws.count()) ws.textAll(msg);
 }
 
+// Telemetry for the laptop bridge (bridge/): one JSON object per line, prefixed with '@'.
+static void emit(const char *ev, const String &extra = "") {
+  Serial.printf("@{\"ev\":\"%s\",\"me\":\"%s\",\"friend\":\"%s\"%s%s}\n", ev, myName, friendName,
+                extra.length() ? "," : "", extra.c_str());
+}
+
 static int readBattery() {
   if (BATTERY_PIN < 0) return -1;
   int mv = analogReadMilliVolts(BATTERY_PIN) * 2;      // 1:2 divider
@@ -135,11 +141,21 @@ static void startMySos(const char *from) {
   mySosActive = true;
   mySosAcked = false;
   Serial.printf("! SOS started from %s (seq %u)\n", from, mySosSeq);
+  emit("my_sos", String("\"seq\":") + mySosSeq + ",\"from\":\"" + from + "\"");
 }
 
 static void endMySos(const char *from) {
   mySosActive = false;
   Serial.printf("! SOS ended from %s\n", from);
+  emit("my_sos_end", String("\"from\":\"") + from + "\"");
+}
+
+static void ackFriendSos(const char *from) {
+  if (!friendSosPending) return;
+  myAckSeq = friendSosSeq;
+  friendSosPending = false;
+  Serial.printf("! you acknowledged %s's SOS\n", friendName);
+  emit("friend_sos_acked", String("\"seq\":") + friendSosSeq + ",\"from\":\"" + from + "\"");
 }
 
 // ---------- ESP-NOW ----------
@@ -155,9 +171,10 @@ static void onEspNowRecv(const esp_now_recv_info_t *info, const uint8_t *data, i
 }
 
 static void handleBeacon(const Rx &rx, uint32_t now) {
+  bool justPaired = false;
   if (!paired) {
     memcpy(friendMac, rx.mac, 6);
-    paired = true;
+    paired = justPaired = true;
     Serial.printf("~ paired with %.16s (%s)\n", rx.b.name, macStr(rx.mac).c_str());
   }
   if (memcmp(rx.mac, friendMac, 6) != 0) {
@@ -174,6 +191,8 @@ static void handleBeacon(const Rx &rx, uint32_t now) {
   friendName[sizeof friendName - 1] = 0;
   friendBattery = rx.b.battery == 255 ? -1 : rx.b.battery;
   rssiAvg = isnan(rssiAvg) ? rx.rssi : rssiAvg * 0.7f + rx.rssi * 0.3f;
+  if (justPaired) emit("paired", String("\"mac\":\"") + macStr(rx.mac) + "\"");
+  emit("rssi", String("\"rssi\":") + rx.rssi);
   sendAll(String("{\"type\":\"rssi\",\"rssi\":") + rx.rssi + "}");
 
   // friend's SOS
@@ -184,11 +203,13 @@ static void handleBeacon(const Rx &rx, uint32_t now) {
     if (friendSosPending) {
       sendAll("{\"type\":\"sos\"}");
       Serial.printf("! %s sent SOS (seq %u)\n", friendName, friendSosSeq);
+      emit("friend_sos", String("\"seq\":") + friendSosSeq);
     }
   } else if (!sos && friendSosOn) {
     friendSosPending = false;
     sendAll("{\"type\":\"sos_clear\"}");
     Serial.printf("! %s ended SOS\n", friendName);
+    emit("friend_sos_end");
   }
   friendSosOn = sos;
 
@@ -198,6 +219,7 @@ static void handleBeacon(const Rx &rx, uint32_t now) {
     celebrateUntil = now + 900;
     sendAll("{\"type\":\"sos_ack\"}");
     Serial.printf("! %s acknowledged your SOS\n", friendName);
+    emit("my_sos_acked", String("\"seq\":") + mySosSeq);
   }
 }
 
@@ -224,14 +246,13 @@ static void onPhoneMessage(AsyncWebSocketClient *client, const String &msg) {
   } else if (type == "sos_cancel") {
     if (mySosActive) endMySos("phone");
   } else if (type == "sos_ack") {
-    myAckSeq = friendSosSeq;
-    friendSosPending = false;
-    Serial.printf("! you acknowledged %s's SOS\n", friendName);
+    ackFriendSos("phone");
   } else if (type == "calibrate") {
     int n, f;
     if (jsonInt(msg, "near", n) && jsonInt(msg, "far", f) && n - f >= 5) {
       calNear = n; calFar = f;
       Serial.printf("~ calibration near=%d far=%d\n", calNear, calFar);
+      emit("calibrate", String("\"near\":") + calNear + ",\"far\":" + calFar);
     }
   }
 }
@@ -240,12 +261,14 @@ static void onWsEvent(AsyncWebSocket *, AsyncWebSocketClient *client, AwsEventTy
                       void *arg, uint8_t *data, size_t len) {
   if (type == WS_EVT_CONNECT) {
     Serial.printf("+ phone #%u from %s\n", client->id(), client->remoteIP().toString().c_str());
+    emit("phone", String("\"phones\":") + ws.count());
     client->text(statusJson());
     // a phone that (re)connects mid-alert still needs to see it
     if (friendSosPending) client->text("{\"type\":\"sos\"}");
     if (mySosActive && mySosAcked) client->text("{\"type\":\"sos_ack\"}");
   } else if (type == WS_EVT_DISCONNECT) {
     Serial.printf("- phone #%u\n", client->id());
+    emit("phone", String("\"phones\":") + ws.count());
   } else if (type == WS_EVT_DATA) {
     AwsFrameInfo *info = (AwsFrameInfo *)arg;
     if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
@@ -337,6 +360,13 @@ void loop() {
   if (now - lastClean >= 1000) { lastClean = now; ws.cleanupClients(); }
 
   pollButton(now);
+
+  static bool wasHeard = false;
+  bool heard = paired && now - friendLastAt < LOST_MS;
+  if (heard != wasHeard) {
+    wasHeard = heard;
+    if (paired) emit(heard ? "found" : "lost");
+  }
   digitalWrite(HAPTIC_PIN, hapticOn(now) ? HIGH : LOW);
 
   if (now - lastLog >= 2000) {
@@ -359,11 +389,7 @@ void loop() {
         if (mySosActive) endMySos("serial"); else startMySos("serial");
         break;
       case 'a':   // same as the phone's Acknowledge button
-        if (friendSosPending) {
-          myAckSeq = friendSosSeq;
-          friendSosPending = false;
-          Serial.printf("! you acknowledged %s's SOS\n", friendName);
-        }
+        ackFriendSos("serial");
         break;
     }
   }

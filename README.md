@@ -2,19 +2,30 @@
 
 Bracelets that help friends find each other in a crowd. Each ESP32 bracelet listens for its friend's ESP-NOW radio signal (RSSI) and buzzes faster as they get closer, and either friend can send an SOS. A phone joins its bracelet's Wi-Fi hotspot and opens a page the bracelet serves, which shows a 0–100 closeness score, the SOS controls and a full-screen alert. No internet or app install is needed.
 
+On top of that offline core, a bracelet plugged into a laptop streams everything it hears into a Tiger Data (Postgres + TimescaleDB) database. The online features read from it: an organizer dashboard, an iMessage agent and the sponsor integrations, which are in progress.
+
+```
+bracelet B ))) bracelet A ──USB──> laptop bridge ──> Tiger Data ──> dashboard, iMessage agent, ...
+                    │
+                 phone (bracelet's own Wi-Fi, offline)
+```
+
 ```
 index.html                    the whole phone/desktop UI in one file (no network requests, ~37 KB)
 mock-server.js                fake bracelet for working on the UI without hardware (zero dependencies)
-firmware/crowdsource/         bracelet firmware: ESP-NOW + hotspot + web page (flash to both bracelets)
+firmware/crowdsource/         bracelet firmware: ESP-NOW + hotspot + web page + USB telemetry (flash to both)
 firmware/crowdsource_test/    one-board firmware with a simulated friend, for testing the page on real phones
 firmware/embed_html.py        packs index.html into both sketches (run after editing index.html)
+bridge/                       laptop bridge (USB serial -> Tiger Data) and the database schema
+lib/                          shared Node helpers: .env loader, Tiger Data connection (+ its CA certificate)
+.env.example                  every key the project uses; copy to .env (git-ignored)
 crowd_source/                 standalone bracelet sketch (LED strip, OLED, buzzer, 3 friends; no phone)
 demo/                         scripted walkthrough: demo.mp4, the page it's recorded from, and the recorder
 ```
 
 ## Try the UI without hardware
 
-Needs Node 18+ ([nodejs.org](https://nodejs.org)); nothing to install.
+Needs Node 18+ ([nodejs.org](https://nodejs.org)); the mock has no dependencies.
 
 ```sh
 node mock-server.js            # http://localhost:8080
@@ -42,6 +53,41 @@ To check the page on real phones with a single board, flash `firmware/crowdsourc
 Each bracelet broadcasts a 28-byte beacon 10 times a second on Wi-Fi channel 6: its name, battery, an SOS flag, its SOS sequence number, and the last friend SOS number it acknowledged. The first bracelet heard with the same `GROUP_ID` becomes the friend. Because the SOS state rides in every beacon, a dropped packet can't lose an alert or an acknowledgment. Sequence numbers start at a random value on boot, so a restarted bracelet's new SOS is never mistaken for one that was already acknowledged.
 
 `crowd_source/` is a separate design (NeoPixel strip, OLED, buzzer, up to 3 friends, "Lighthouse" mode) with its own packet format on channel 1. It doesn't talk to `firmware/crowdsource/` yet.
+
+## Stream bracelet data to Tiger Data
+
+1. **Create the database.** With the [Tiger CLI](https://github.com/timescale/tiger-cli):
+   ```sh
+   curl -fsSL https://cli.tigerdata.com | sh
+   tiger auth login
+   tiger service create --name crowdsource --cpu shared     # free tier
+   echo "DATABASE_URL=$(tiger db connection-string --with-password)" >> .env
+   ```
+   Or create a service in the [Tiger Console](https://console.cloud.tigerdata.com) and paste its connection string into `.env` as `DATABASE_URL`. Treat it like a password.
+2. **Install and run the bridge** with a bracelet plugged into USB:
+   ```sh
+   npm install
+   npm run bridge                          # finds the bracelet's port by itself
+   npm run bridge -- --port /dev/cu.usbserial-3 --verbose
+   ```
+   The bridge creates the tables on first run. Without `DATABASE_URL` it does a dry run and only prints what it would store. To test without hardware, pipe saved telemetry into `node bridge/bridge.js --stdin`.
+
+**What gets stored** ([bridge/schema.sql](bridge/schema.sql)):
+
+| Table | Contents |
+|---|---|
+| `readings` (hypertable) | Every beacon heard: `time`, `bracelet`, `friend`, `rssi`, about 10 rows per second per pair. |
+| `events` (hypertable) | `paired`, `lost` / `found`, `my_sos`, `my_sos_acked`, `my_sos_end`, `friend_sos`, `friend_sos_acked`, `friend_sos_end`, `phone`, `calibrate`, with extra fields in `detail` (jsonb). |
+| `readings_10s` (continuous aggregate) | Average RSSI and packet count per 10 s, refreshed by TimescaleDB every 10 s. The dashboard charts from this. |
+
+The firmware sends telemetry as one JSON object per serial line, prefixed with `@` so it can share the port with the human-readable log:
+
+```
+@{"ev":"rssi","me":"Band 94C1","friend":"Band 4661","rssi":-55}
+@{"ev":"friend_sos","me":"Band 94C1","friend":"Band 4661","seq":47021}
+```
+
+Tiger Data signs connections with its own certificate authority (`ca.timescale.com`). `lib/db.js` verifies against the copy in `lib/tiger-ca.pem`, so connections stay encrypted and checked; don't switch verification off. Opening the serial port doesn't reset the bracelet, and the port name can change when you replug it, so let the bridge find it.
 
 ## WebSocket contract (`/ws`, JSON text frames)
 
