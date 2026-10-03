@@ -89,6 +89,15 @@ const uint8_t SIG_COLOR[NUM_DEVICES][3] = {
 
 // =====================================================================
 
+struct Button {
+  uint8_t  pin;
+  bool     prev;
+  uint32_t downAt;
+  uint32_t changeAt;
+};
+
+enum Press { NONE, SHORT_PRESS, LONG_PRESS };
+
 #define MAGIC 0x4C48            // "LH"
 #define FLAG_LIGHTHOUSE 0x01
 
@@ -232,16 +241,8 @@ void updateBuzzer(uint32_t now) {
 
 // ============================ Buttons ================================
 
-struct Button {
-  uint8_t  pin;
-  bool     prev;
-  uint32_t downAt;
-  uint32_t changeAt;
-};
 Button beaconBtn = {BEACON_BTN_PIN, HIGH, 0, 0};
 Button selectBtn = {SELECT_BTN_PIN, HIGH, 0, 0};
-
-enum Press { NONE, SHORT_PRESS, LONG_PRESS };
 
 Press readButton(Button& b, uint32_t now) {
   bool level = digitalRead(b.pin);
