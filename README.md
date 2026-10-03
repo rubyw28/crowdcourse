@@ -53,7 +53,7 @@ Open the printed LAN address on a phone on the same Wi-Fi to try the phone layou
 
 ## Run it on the bracelets
 
-**Setup (once):** in the Arduino IDE, install the **esp32** boards package by Espressif (3.x) and the libraries **ESP Async WebServer** and **Async TCP** (both by ESP32Async). Use the board **ESP32 Dev Module**.
+**Setup (once):** in the Arduino IDE, install the **esp32** boards package by Espressif (3.x) and the libraries **ESP Async WebServer** and **Async TCP** (both by ESP32Async). Use the board **ESP32 Dev Module**. For the worn `crowd_source/` sketch, also install **Adafruit NeoPixel** and **LiquidCrystal I2C**.
 
 1. If you changed `index.html`, run `python3 firmware/embed_html.py`.
 2. Flash `firmware/crowdsource/crowdsource.ino` to **both** boards. No per-board changes are needed: each one names itself from its chip ID.
@@ -69,7 +69,7 @@ To check the page on real phones with a single board, flash `firmware/crowdsourc
 
 Each bracelet broadcasts a 28-byte beacon 10 times a second on Wi-Fi channel 6: its name, battery, an SOS flag, its SOS sequence number, and the last friend SOS number it acknowledged. The first bracelet heard with the same `GROUP_ID` becomes the friend. Because the SOS state rides in every beacon, a dropped packet can't lose an alert or an acknowledgment. Sequence numbers start at a random value on boot, so a restarted bracelet's new SOS is never mistaken for one that was already acknowledged.
 
-`crowd_source/` is a separate design (NeoPixel strip, 16x2 LCD, buzzer, up to 3 friends, "Lighthouse" mode) with its own packet format on channel 1. It doesn't talk to `firmware/crowdsource/`. It serves the same phone page from a hotspot named `Crowdsource-<NAME>`: the page shows whichever friend SELECT is tracking, its SOS turns on Lighthouse, and acknowledging a friend's Lighthouse on the phone tells their bracelet help is coming. It also prints the same `@{...}` USB telemetry, so the bridge below works with it (bracelets are named by `NAMES`, e.g. `Ruby`).
+`crowd_source/` is the worn bracelet: NeoPixel strip, 16x2 LCD, buzzer, up to 3 friends, and Lighthouse. It serves the same phone page from a hotspot named `Crowdsource-<NAME>`: the page shows whichever friend SELECT is tracking, its SOS turns on Lighthouse, and acknowledging a friend's Lighthouse on the phone tells their bracelet help is coming. It also prints the same `@{...}` USB telemetry, so the bridge and the aid station below work with it. Bracelets are named by `NAMES`, for example `Ruby`. `firmware/crowdsource/` is the earlier one-friend sketch and does not use this wiring.
 
 ## Stream bracelet data to Tiger Data
 

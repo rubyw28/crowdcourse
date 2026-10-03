@@ -5,6 +5,7 @@
 //   - measures the RSSI of its friend's beacons and forwards it to the phone
 //   - runs a Wi-Fi hotspot "Crowdsource-XXXX" serving index.html at http://192.168.4.1
 //   - buzzes faster as the friend gets closer, and hard during the friend's SOS
+//   - drives the worn parts from crowd_source/: 12-LED strip, OLED, buzzer, select button
 //
 // SOS is carried in every beacon (flag + sequence number) so a lost packet never loses it:
 //   A starts SOS  -> A.flags=SOS, A.sosSeq++   -> B tells its phone {"type":"sos"}
@@ -14,7 +15,8 @@
 // The first bracelet heard with the same GROUP_ID becomes the friend. Send 'p' over
 // serial to forget it and pair again ('s' and 'a' test SOS without a phone).
 //
-// Libraries: "ESP Async WebServer" and "Async TCP" (both by ESP32Async). Board: ESP32 Dev Module.
+// Libraries: "ESP Async WebServer" and "Async TCP" (both by ESP32Async),
+// Adafruit NeoPixel, Adafruit GFX, Adafruit SSD1306. Board: ESP32 Dev Module.
 // Regenerate index_html.h after editing index.html: python3 firmware/embed_html.py
 
 #include <WiFi.h>
@@ -24,6 +26,10 @@
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <math.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <Adafruit_NeoPixel.h>
 #include "index_html.h"
 
 // ---------- config ----------
@@ -31,17 +37,18 @@ static const char *MY_NAME = "";            // shown on your friend's phone; "" 
 static const uint8_t GROUP_ID = 0x42;       // both bracelets must match; change if another team uses this code
 static const uint8_t WIFI_CHANNEL = 6;      // both bracelets must match (ESP-NOW shares the hotspot's channel)
 static const char *AP_PASSWORD = "";        // open hotspot; 8+ chars to enable WPA2
-static const int BUTTON_PIN = 0;            // BOOT button. Hold 1.5 s to start or end SOS
+static const int BUTTON_PIN = 0;            // beacon button. Short press: lighthouse. Hold 1.5 s: SOS
+static const int SELECT_PIN = 27;           // short press: acknowledge a friend's SOS. Hold 1 s: mute the far-alarm
 static const int HAPTIC_PIN = 2;            // vibration motor driver, or the onboard LED as a stand-in
+static const int BUZZER_PIN = 25;           // active buzzer. Set BUZZER_PASSIVE if it needs a tone
+static const int LED_PIN = 13;              // NeoPixel data, 12 LEDs
+static const int NUM_LEDS = 12;
 static const int BATTERY_PIN = -1;          // ADC pin on a 1:2 divider from the LiPo, or -1 if not wired
-
-// Pins left open for extra hardware. Taken: 0 (SOS button), 1 and 3 (USB serial
-// telemetry — do not touch), 2 (haptic). Also leave 6–11 alone (flash) and avoid
-// 12 (it is read at boot). Free and safe: 4, 5, 13–19, 21–23, 25–27, 32, 33.
-// A sensible add-on set, matching crowd_source/'s wiring: NeoPixel data on 13,
-// buzzer on 25, a second button on 27, OLED on the default I2C pins 21 (SDA) and 22 (SCL).
-// Add parts in setup() and loop() below the radio. Keep Beacon, GROUP_ID, and
-// WIFI_CHANNEL as they are, or the two bracelets stop hearing each other.
+static const bool BUZZER_PASSIVE = false;
+static const uint32_t LIGHTHOUSE_MS = 60000;
+static const uint32_t TETHER_MS = 8000;
+static const uint32_t TETHER_REPEAT_MS = 10000;
+static const uint32_t MUTE_MS = 120000;
 static const bool HAPTIC_PROXIMITY = true;  // pulse faster as the friend gets closer
 
 static const uint32_t BEACON_MS = 100;
@@ -53,6 +60,7 @@ static const uint32_t HOLD_MS = 1500;
 static const uint32_t MAGIC = 0x44575243;   // "CRWD"
 static const uint8_t VERSION = 1;
 static const uint8_t FLAG_SOS = 0x01;
+static const uint8_t FLAG_LIGHTHOUSE = 0x02;   // spare bit: "I am here, look for my strobe"
 
 struct __attribute__((packed)) Beacon {
   uint32_t magic;
@@ -91,6 +99,14 @@ static bool friendSosPending = false;   // ...and we haven't acknowledged it yet
 
 static int calNear = -45, calFar = -85;
 static uint32_t celebrateUntil = 0;     // short buzz pattern when our SOS is acknowledged
+static bool myLighthouse = false, friendLighthouse = false, friendLhEdge = false;
+static uint32_t lighthouseStart = 0;
+static bool tetherMuted = false;
+static uint32_t muteStart = 0, farSince = 0, lastTetherBuzz = 0;
+
+static Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
+static Adafruit_SSD1306 display(128, 64, &Wire, -1);
+static bool oledOK = false;
 
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
@@ -221,6 +237,10 @@ static void handleBeacon(const Rx &rx, uint32_t now) {
   }
   friendSosOn = sos;
 
+  bool lh = rx.b.flags & FLAG_LIGHTHOUSE;
+  if (lh && !friendLighthouse) friendLhEdge = true;
+  friendLighthouse = lh;
+
   // friend acknowledged our SOS
   if (mySosActive && !mySosAcked && rx.b.ackSeq == mySosSeq) {
     mySosAcked = true;
@@ -238,7 +258,9 @@ static void sendBeacon() {
   b.version = VERSION;
   int bat = readBattery();
   b.battery = bat < 0 ? 255 : bat;
-  b.flags = mySosActive ? FLAG_SOS : 0;
+  b.flags = 0;
+  if (mySosActive) b.flags |= FLAG_SOS;
+  if (myLighthouse) b.flags |= FLAG_LIGHTHOUSE;
   b.sosSeq = mySosSeq;
   b.ackSeq = myAckSeq;
   strncpy(b.name, myName, sizeof b.name);
@@ -290,6 +312,143 @@ static void onWsEvent(AsyncWebSocket *, AsyncWebSocketClient *client, AwsEventTy
   }
 }
 
+// ---------- worn hardware (strip, screen, buzzer, select) ----------
+static uint8_t buzzLeft = 0;
+static uint16_t buzzOnMs = 0, buzzOffMs = 0;
+static uint32_t buzzNext = 0;
+static bool buzzLevel = false;
+static uint32_t stripFlashUntil = 0;
+
+static void buzzerWrite(bool on) {
+  buzzLevel = on;
+  if (BUZZER_PASSIVE) {
+    if (on) tone(BUZZER_PIN, 2000);
+    else noTone(BUZZER_PIN);
+  } else {
+    digitalWrite(BUZZER_PIN, on ? HIGH : LOW);
+  }
+}
+
+static void buzz(uint8_t pulses, uint16_t onMs, uint16_t offMs) {
+  buzzerWrite(false);
+  buzzLeft = pulses;
+  buzzOnMs = onMs;
+  buzzOffMs = offMs;
+  buzzNext = millis();
+}
+
+static void updateBuzzer(uint32_t now) {
+  if (!buzzLeft && !buzzLevel) return;
+  if ((int32_t)(now - buzzNext) < 0) return;
+  if (buzzLevel) {
+    buzzerWrite(false);
+    buzzNext = now + buzzOffMs;
+  } else if (buzzLeft) {
+    buzzerWrite(true);
+    buzzLeft--;
+    buzzNext = now + buzzOnMs;
+  }
+}
+
+static float closeness() {
+  if (!paired || isnan(rssiAvg)) return 0;
+  return constrain((rssiAvg - calFar) / float(calNear - calFar), 0.0f, 1.0f);
+}
+
+static bool signalLost(uint32_t now) {
+  return !paired || now - friendLastAt > LOST_MS;
+}
+
+static void drawStrip(uint32_t now) {
+  if (friendSosPending || mySosActive) {
+    bool on = (now / 150) % 2 == 0;
+    strip.setBrightness(80);
+    strip.fill(on ? strip.Color(255, 20, 0) : 0);
+    strip.show();
+    return;
+  }
+  if (myLighthouse || friendLighthouse) {
+    bool on = (now % 300) < 80;
+    strip.setBrightness(80);   // full white at 200 browns out a laptop USB port
+    strip.fill(on ? (myLighthouse ? strip.Color(255, 255, 255) : strip.Color(255, 140, 0)) : 0);
+    strip.show();
+    return;
+  }
+  strip.setBrightness(40);
+  if ((int32_t)(stripFlashUntil - now) > 0) {
+    strip.fill(strip.Color(255, 255, 255));
+  } else if (signalLost(now)) {
+    strip.fill((now % 1000) < 150 ? strip.Color(40, 80, 255) : 0);
+  } else {
+    float heat = closeness();
+    uint16_t hue = (uint16_t)((1.0f - heat) * 43690);   // blue when far, red when close
+    strip.fill(strip.gamma32(strip.ColorHSV(hue)));
+  }
+  strip.show();
+}
+
+static void drawOled(uint32_t now) {
+  if (!oledOK) return;
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.print(myName);
+  if (myLighthouse) display.print("  BEACON");
+  else if (tetherMuted) display.print("  MUTE");
+  display.setCursor(0, 14);
+  display.print("Friend");
+  display.setTextSize(2);
+  display.setCursor(0, 26);
+  display.print(paired ? friendName : "searching");
+  display.setTextSize(1);
+  display.setCursor(0, 48);
+  if (friendSosPending) display.print("THEY NEED HELP");
+  else if (mySosActive) display.print(mySosAcked ? "SOS heard" : "SOS sent");
+  else if (friendLighthouse) display.print("FIND THEM");
+  else if (signalLost(now)) display.print(paired ? "signal lost" : "looking");
+  else {
+    int score = (int)(closeness() * 100);
+    display.print(score);
+    display.print("  ");
+    display.print((int)rssiAvg);
+    display.print(" dBm");
+  }
+  display.display();
+}
+
+static void pollSelect(uint32_t now) {
+  static uint32_t downAt = 0;
+  static bool fired = false;
+  bool down = digitalRead(SELECT_PIN) == LOW;
+  if (down && !downAt) { downAt = now; fired = false; }
+  if (down && !fired && downAt && now - downAt >= 1000) {
+    fired = true;
+    tetherMuted = !tetherMuted;
+    muteStart = now;
+    buzz(tetherMuted ? 1 : 2, 60, 80);
+    Serial.println(tetherMuted ? "~ far-alarm muted" : "~ far-alarm on");
+  }
+  if (!down && downAt) {
+    if (!fired && now - downAt > 40) {
+      if (friendSosPending) ackFriendSos("button");
+      else { stripFlashUntil = now + 800; buzz(1, 40, 0); }
+    }
+    downAt = 0;
+  }
+}
+
+static void updateTether(uint32_t now) {
+  if (tetherMuted && now - muteStart > MUTE_MS) tetherMuted = false;
+  bool far = signalLost(now) || closeness() < 0.4f;
+  if (!paired || !far || friendSosPending) { farSince = 0; return; }
+  if (!farSince) farSince = now;
+  if (!tetherMuted && now - farSince > TETHER_MS && now - lastTetherBuzz > TETHER_REPEAT_MS) {
+    buzz(2, 80, 80);
+    lastTetherBuzz = now;
+  }
+}
+
 // ---------- haptics ----------
 static bool hapticOn(uint32_t now) {
   if (friendSosPending) return (now / 150) % 2 == 0;                    // urgent: fast, until acknowledged
@@ -301,15 +460,26 @@ static bool hapticOn(uint32_t now) {
 }
 
 // ---------- button ----------
+static void toggleLighthouse(uint32_t now) {
+  myLighthouse = !myLighthouse;
+  lighthouseStart = now;
+  buzz(myLighthouse ? 2 : 1, 60, 50);
+  emit(myLighthouse ? "lighthouse_on" : "lighthouse_off");
+  Serial.println(myLighthouse ? "~ lighthouse on" : "~ lighthouse off");
+}
+
 static void pollButton(uint32_t now) {
   static uint32_t downAt = 0;
   static bool fired = false;
   bool down = digitalRead(BUTTON_PIN) == LOW;
   if (down && !downAt) { downAt = now; fired = false; }
-  if (!down) downAt = 0;
-  if (down && !fired && now - downAt >= HOLD_MS) {
+  if (down && !fired && downAt && now - downAt >= HOLD_MS) {
     fired = true;
     if (mySosActive) endMySos("button"); else startMySos("button");
+  }
+  if (!down && downAt) {
+    if (!fired && now - downAt > 40) toggleLighthouse(now);
+    downAt = 0;
   }
 }
 
@@ -318,7 +488,17 @@ void setup() {
   Serial.begin(115200);
   pinMode(HAPTIC_PIN, OUTPUT);
   digitalWrite(HAPTIC_PIN, LOW);
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
   pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(SELECT_PIN, INPUT_PULLUP);
+  strip.begin();
+  strip.setBrightness(40);
+  strip.fill(strip.Color(40, 80, 255));
+  strip.show();
+  Wire.begin(21, 22);
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) Serial.println("OLED not found, continuing without it");
+  else oledOK = true;
   delay(300);
 
   // Random start so a rebooted bracelet never reuses a sequence number its friend already acknowledged.
@@ -358,6 +538,8 @@ void setup() {
 
   Serial.printf("\nCrowdsource bracelet \"%s\"\n", myName);
   Serial.printf("Join Wi-Fi \"%s\", then open http://%s\n", ssid, WiFi.softAPIP().toString().c_str());
+  Serial.println("Beacon button: short press lighthouse, hold 1.5 s SOS");
+  Serial.println("Select button: short press acknowledge, hold 1 s mute the far-alarm");
   Serial.println("Serial: p = re-pair  s = start/end SOS  a = acknowledge friend SOS");
 }
 
@@ -372,7 +554,18 @@ void loop() {
   if (now - lastStatus >= STATUS_MS) { lastStatus = now; sendAll(statusJson()); }
   if (now - lastClean >= 1000) { lastClean = now; ws.cleanupClients(); }
 
+  if (myLighthouse && now - lighthouseStart > LIGHTHOUSE_MS) {
+    myLighthouse = false;
+    emit("lighthouse_off");
+  }
+  if (friendLhEdge) { friendLhEdge = false; buzz(3, 80, 60); }
   pollButton(now);
+  pollSelect(now);
+  updateTether(now);
+  updateBuzzer(now);
+  static uint32_t lastStrip = 0, lastOled = 0;
+  if (now - lastStrip >= 20) { drawStrip(now); lastStrip = now; }
+  if (now - lastOled >= 200) { drawOled(now); lastOled = now; }
 
   static bool wasHeard = false;
   bool heard = paired && now - friendLastAt < LOST_MS;
