@@ -31,6 +31,7 @@ a { color: var(--paper); }
 main { max-width: 1080px; margin: 0 auto; padding: 28px 28px 64px; }
 header { display: flex; justify-content: space-between; gap: 24px; align-items: baseline; }
 .word { font-family: var(--display); font-weight: 700; font-size: 28px; letter-spacing: -.02em; }
+.purpose { margin: 8px 0 0; max-width: 36em; color: var(--dim); }
 .heard { color: var(--dim); text-align: right; }
 .stage { display: grid; grid-template-columns: minmax(220px, 340px) 1fr; gap: 36px; align-items: end; margin-top: 18px; }
 .score {
@@ -73,8 +74,11 @@ canvas { width: 100%; height: 220px; display: block; }
 <body data-state="lost">
 <main>
   <header>
-    <div class="word">Crowdsource</div>
-    <div class="heard" id="heard">Waiting for Tiger Data</div>
+    <div>
+      <div class="word">Crowdsource</div>
+      <p class="purpose">For the person helping. The bracelets still find each other with this screen off.</p>
+    </div>
+    <div class="heard" id="heard">Waiting for a bracelet</div>
   </header>
   <div class="stage">
     <div>

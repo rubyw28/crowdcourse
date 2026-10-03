@@ -1,12 +1,25 @@
 # Crowdsource
 
-Bracelets that help friends find each other when a crowd knocks out the usual tools: a dead battery, a jammed cell network, or a GPS dot that cannot tell "beside you" from "across the room." Each ESP32 listens for its friend's ESP-NOW radio signal (RSSI) and buzzes faster as they get closer, so you can keep your eyes on the people around you. Either friend can send an SOS, and it stays on until the other person acknowledges it. A phone joins its bracelet's Wi-Fi hotspot and opens a page the bracelet serves, which shows a 0–100 closeness score, the SOS controls and a full-screen alert. No internet, no account, and no app install. A borrowed phone is enough.
+Crowdsource is for the moment a crowd separates two people and the phone stops being a way back. At a show, a campus night, or a packed exit, the cell network clogs, GPS cannot tell "beside you" from "across the room," and a dead battery ends the search. That hits hardest when someone cannot stand there staring at a map: they need their eyes on the crowd, their phone died, or they only have a borrowed one.
 
-The people this is for are the ones a crowd separates: a friend who can't look down at a map, someone whose phone died, a pair trying to leave a show together. The band is the search. The laptop dashboard is only for whoever is trying to help them.
+Each person wears an ESP32 bracelet. It listens for the other over ESP-NOW and buzzes faster as they get closer, so the search stays on the wrist. Either person can hold to send an SOS, and it stays on until the other acknowledges it. A dropped packet cannot drop the alert. The phone joins that bracelet's Wi-Fi and opens a page the bracelet serves: a 0–100 closeness score, the SOS control, and a full-screen alert. No internet, no account, no app. A borrowed phone is enough.
+
+The score is learned from this pair, in this room. Stand together, then step apart. A slow change means someone is walking. A sharp drop, while the beacons keep arriving, means a person stepped between them, and the number holds so nobody walks the wrong way.
+
+One bracelet can stay plugged into a laptop or a Raspberry Pi. That screen is only for the friend or staff member trying to help: who is apart, who raised SOS, how long the reunion took. It only knows about the two people wearing the bands. Finding each other never depends on it.
+
+## Judging demo
+
+1. Two people, two bracelets, each phone on its own hotspot at `http://192.168.4.1`.
+2. Calibrate together, then apart. Say that the band just learned this pair in this room.
+3. Walk apart until the buzz slows. Walk back until it speeds up.
+4. Have someone step between the bracelets. The page says to stay on that line, and the number holds.
+5. Hold SOS until the other person taps Acknowledge.
+6. If the Pi is running, glance at it last. It is the helper's screen, not the search.
 
 The closeness score is fit to this pair, not to a universal radio curve. Calibration records how the two bracelets sound when they stand together and when they step apart. After that, a slow change means someone is walking closer or farther. A sharp drop, while the beacons keep arriving, is scored as a person stepping between them, and the number holds instead of telling you your friend left.
 
-On top of that offline core, a bracelet plugged into a laptop streams everything it hears into a Tiger Data (Postgres + TimescaleDB) database. The online features read from it: an organizer dashboard, an iMessage agent and the sponsor integrations, which are in progress.
+On top of that offline core, the station bracelet streams what it hears into Tiger Data (Postgres + TimescaleDB). The helper's dashboard, the iMessage replies, and the sponsor pieces read from there. They turn on when the matching key is in `.env`.
 
 ```
 bracelet B ))) bracelet A ──USB──> laptop bridge ──> Tiger Data ──> dashboard, iMessage agent, ...
