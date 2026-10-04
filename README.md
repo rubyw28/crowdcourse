@@ -12,6 +12,42 @@ The score is learned from this pair, in this room. Stand together, then step apa
 
 One bracelet can stay plugged into a laptop or a Raspberry Pi: the aid station. That screen is for the friend or staff member trying to help: who is apart, how they came apart, who raised SOS. It also answers questions over iMessage. Finding each other never depends on it.
 
+## How it fits together
+
+```mermaid
+flowchart LR
+  subgraph crowd["In the crowd (offline)"]
+    A["Bracelet A<br/>LED strip, LCD, buzzer"]
+    B["Bracelet B<br/>LED strip, LCD, buzzer"]
+    PA["Phone A<br/>page served by A"]
+    PB["Phone B<br/>page served by B"]
+    A <-->|ESP-NOW beacons, 10/s| B
+    PA <-->|bracelet Wi-Fi + WebSocket| A
+    PB <-->|bracelet Wi-Fi + WebSocket| B
+  end
+
+  subgraph station["Aid station (laptop or Raspberry Pi)"]
+    BR["Bridge<br/>bridge/bridge.js"]
+    WEB["Dashboard server<br/>web/server.js"]
+  end
+
+  TD[("Tiger Data<br/>readings, events,<br/>readings_10s, messages")]
+  GEM["Gemini agent<br/>tools query Tiger Data"]
+  PH["Photon iMessage"]
+  HELP["Helper's phone"]
+
+  A -->|USB serial telemetry| BR
+  BR -->|writes| TD
+  WEB -->|reads| TD
+  WEB <--> GEM
+  GEM -->|SQL tools| TD
+  WEB <-->|texts and alerts| PH
+  PH <--> HELP
+  HELP -.->|dashboard on the same network| WEB
+```
+
+The bracelets and their phones never need the aid station or the internet. The station only listens to the bracelet on its USB cable and helps whoever is looking for someone.
+
 ## The bracelets
 
 **Setup (once):** in the Arduino IDE, install the **esp32** boards package by Espressif (3.x) and the libraries **Adafruit NeoPixel**, **LiquidCrystal I2C** (Frank de Brabander), **ESP Async WebServer** and **Async TCP** (both by ESP32Async). Use the board **ESP32 Dev Module**.
@@ -110,3 +146,7 @@ The page connects to `ws://<host that served it>/ws`, which is `ws://192.168.4.1
 2. **Score:** `100 × (avg − far) / (near − far)`, clamped to 0–100. The defaults are near −45 dBm and far −85 dBm. RSSI is already logarithmic in distance, so this linear map spends most of its range on the last few metres, where you actually need it.
 3. **Label:** ≥70 very close, ≥40 nearby, otherwise far, with ±4 points of hysteresis so the label doesn't flicker. No RSSI for 5 s shows *lost*.
 4. **Calibrate:** take the median of 5 s of raw samples standing together (near), then again standing apart (far). Far must be at least 8 dB below near.
+
+## License
+
+[MIT](LICENSE)
