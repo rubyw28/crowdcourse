@@ -23,8 +23,8 @@
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
+#include <hd44780.h>
+#include <hd44780ioClass/hd44780_I2Cexp.h>
 #include <Adafruit_NeoPixel.h>
 
 // ======================= CHANGE PER BOARD ============================
@@ -45,7 +45,9 @@ const uint8_t SIG_COLOR[NUM_DEVICES][3] = {
 #define BUZZER_PIN     25
 #define BEACON_BTN_PIN 0     // BOOT button on most dev boards; or a button to GND
 #define SELECT_BTN_PIN 27    // button between this pin and GND
-#define OLED_ADDR      0x3C  // SDA = 21, SCL = 22 by default
+// LCD: SDA = 21, SCL = 22 (I2C address is auto-detected)
+#define LCD_COLS 16
+#define LCD_ROWS 2
 
 // Buzzer type:
 //   0 = ACTIVE buzzer  (beeps by itself when powered — one fixed pitch)
@@ -57,7 +59,7 @@ const uint8_t SIG_COLOR[NUM_DEVICES][3] = {
 #define WIFI_CHANNEL  1
 // Full power for real use. For a small demo room, try WIFI_POWER_2dBm
 // or WIFI_POWER_MINUS_1dBm so walking a few meters changes the color.
-#define TX_POWER      WIFI_POWER_19_5dBm
+#define TX_POWER      WIFI_POWER_19_5dBm // change to 2dBm for small judging room
 #define BROADCAST_MS  100   // ~10 packets/s
 
 // ===================== RSSI tuning (CALIBRATE!) ======================
@@ -67,19 +69,21 @@ const uint8_t SIG_COLOR[NUM_DEVICES][3] = {
 #define HYST        3       // dB of hysteresis so zones don't flicker
 #define HEAT_HOT    -45     // RSSI where the strip is fully red
 #define HEAT_COLD   -90     // RSSI where the strip is fully blue
-#define EMA_ALPHA   0.2f    // RSSI smoothing: lower = smoother but slower
+#define EMA_ALPHA   0.2f    // RSSI smoothing: lower = smoother but slower to react.
+  // weight given to each new RSSI sample in moving average. 0.2: average reflects last 5 samples
 #define COLOR_GLIDE 0.08f   // LED color easing per frame: lower = slower fade
+  // runs 50 times a second, 0.08 gives fade time of 1/4 second
 #define LOST_TIMEOUT_MS 4000 // no packets this long = LOST
 
 // ============================ Alerts =================================
 #define TETHER_MS        8000    // FAR/LOST this long before beeping
 #define TETHER_REPEAT_MS 10000   // re-beep interval while still far
-#define MUTE_MS          120000
-#define LIGHTHOUSE_MS    60000
-#define LONG_PRESS_MS    1000
+#define MUTE_MS          120000  // lasts 2 min
+#define LIGHTHOUSE_MS    60000   // lighthouse switches itself off after 60s
+#define LONG_PRESS_MS    1000    // a press of 1s or more is long press
 #define SELECT_FLASH_MS  1000    // show friend's signature color after selecting
 #define NORMAL_BRIGHTNESS     40   // keep low: battery + eyes
-#define LIGHTHOUSE_BRIGHTNESS 200  // 12 LEDs white at 200 ≈ 0.6 A — use a power bank
+#define LIGHTHOUSE_BRIGHTNESS 100  // 12 LEDs white at 200 ≈ 0.3 A 
 
 // Buzzer pitches (only used with a passive buzzer)
 #define TONE_SELECT     3000
@@ -98,47 +102,65 @@ struct Button {
 
 enum Press { NONE, SHORT_PRESS, LONG_PRESS };
 
-#define MAGIC 0x4C48            // "LH"
-#define FLAG_LIGHTHOUSE 0x01
+#define MAGIC 0x4C48  // ASCII for "LH": ID stamped on every packet, 
+#define FLAG_LIGHTHOUSE 0x01 // one bit in flags byte, room for 7 more flags such as SOS flag
 
-typedef struct __attribute__((packed)) {
+// packet sent over the air, 8 bytes total
+typedef struct __attribute__((packed)) { // __attribute__((packed)) tells computer not to insert padding bytes btwn fields
   uint16_t magic;
   uint8_t  id;
   uint8_t  flags;
-  uint32_t seq;
+  uint32_t seq; // counter that goes up with every packet, not used right now, but could measure packet loss
 } Packet;
 
 enum Zone { Z_CLOSE = 0, Z_NEAR = 1, Z_FAR = 2, Z_LOST = 3 };
 const char* ZONE_NAMES[] = {"CLOSE", "NEAR", "FAR", "LOST"};
 
 // Written by the radio callback (different task) — guarded by mux
+// holds what was heard over radio about each friend
 struct RadioData {
-  float    rssi;
-  bool     everSeen;
-  uint32_t lastSeen;
-  bool     lighthouse;
+  float    rssi; // smoothed signal strength
+  bool     everSeen; // whether we've heard them at least once
+  uint32_t lastSeen; // when the last packet arrived, as ms since boot
+  bool     lighthouse; // whether lighthouse flag is set
 };
-RadioData radio[NUM_DEVICES];
-portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+RadioData radio[NUM_DEVICES]; // global array, starts out all zeros
+portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED; 
+// receive callback doesn't run inside loop() but in the ESP32's Wi-Fi task
+// which can be on the other CPU core at the same moment. Without protection,
+// loop() could read a half-updated record. portMUX_TYPE is a spinlock
+// code between portENTER_CRITICAL(&mux) and portEXIT_CRITICAL(&mux) can't be
+// interrupted so toher core waits until lock is released
 
 // Only touched by loop()
 struct FriendState {
   Zone     zone = Z_LOST;
-  uint32_t farSince = 0;
-  uint32_t lastTetherBuzz = 0;
-  bool     lhActive = false;
+  uint32_t farSince = 0; // when friend first went FAR
+  uint32_t lastTetherBuzz = 0; // when last tether alert for friend was sounded
+  bool     lhActive = false; // is lighthouse active
   float    shownHeat = 0;     // eased value the LEDs actually display
 };
 FriendState state[NUM_DEVICES];
 
 Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
-Adafruit_SSD1306 display(128, 64, &Wire, -1);
-bool oledOK = true;
 
+hd44780_I2Cexp lcd;
+bool lcdOK = true;
+
+// Custom LCD characters 1-4: signal bars of increasing height (5x8 pixels)
+const uint8_t BAR_GLYPHS[4][8] = {
+  {0, 0, 0, 0, 0, 0, 0b01110, 0b01110},                          // 1 bar
+  {0, 0, 0, 0, 0b01110, 0b01110, 0b01110, 0b01110},              // 2 bars
+  {0, 0, 0b01110, 0b01110, 0b01110, 0b01110, 0b01110, 0b01110},  // 3 bars
+  {0b01110, 0b01110, 0b01110, 0b01110, 0b01110, 0b01110, 0b01110, 0b01110}, // 4
+};
+
+// broadcast MAC address, packet sent to all-FF reaches every
+// ESP-NOW device on the channel
 uint8_t BCAST[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 int      selected = (MY_ID == 0) ? 1 : 0;   // friend currently being tracked
-uint32_t selectFlashUntil = 0;
+uint32_t selectFlashUntil = 0; // time at which signature color flash ends
 bool     myLighthouse = false;
 uint32_t lighthouseStart = 0;
 bool     muted = false;
@@ -146,21 +168,25 @@ uint32_t muteStart = 0;
 
 // ============================ Radio ==================================
 
+// called every time a packet arrives
+// packet - magic, id, flags, seq
+// radioData - rssi, everSeen, lastSeen, lighthouse
 void onRecv(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
   if (len != sizeof(Packet)) return;
   Packet p;
   memcpy(&p, data, sizeof(p));
   if (p.magic != MAGIC || p.id >= NUM_DEVICES || p.id == MY_ID) return;
 
+// rx_ctrl: radio's receive-control info for packet
   int rssi = info->rx_ctrl->rssi;
-  uint32_t now = millis();
+  uint32_t now = millis(); // return ms since boot
 
   portENTER_CRITICAL(&mux);
-  RadioData& r = radio[p.id];
+  RadioData& r = radio[p.id]; // r is a reference, changing r changes array entry
   if (!r.everSeen || now - r.lastSeen > LOST_TIMEOUT_MS) {
     r.rssi = rssi;                          // fresh start after being lost
   } else {
-    r.rssi += EMA_ALPHA * (rssi - r.rssi);  // exponential moving average
+    r.rssi += EMA_ALPHA * (rssi - r.rssi);  // exponential moving average: new avg = old avg + 20% of diff btwn new sample & old avg
   }
   r.everSeen   = true;
   r.lastSeen   = now;
@@ -169,9 +195,9 @@ void onRecv(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
 }
 
 void broadcast() {
-  static uint32_t seq = 0;
+  static uint32_t seq = 0; // keeps value between calls
   Packet p = {MAGIC, MY_ID, (uint8_t)(myLighthouse ? FLAG_LIGHTHOUSE : 0), seq++};
-  esp_now_send(BCAST, (uint8_t*)&p, sizeof(p));
+  esp_now_send(BCAST, (uint8_t*)&p, sizeof(p)); // sends 8 bytes to broadcast addr
 }
 
 // ============================ Zones ==================================
@@ -191,20 +217,25 @@ Zone nextZone(Zone cur, float r) {
   return cur;
 }
 
+// maps RSSI linearly onto range 0 to 1
+// At -90: (-90 + 90)/45 = 0; at -45: 45/45 = 1
+// constrain clamps anything outside this range
 // 0.0 = cold/far, 1.0 = hot/close
 float heat(float r) {
   return constrain((r - HEAT_COLD) / float(HEAT_HOT - HEAT_COLD), 0.0f, 1.0f);
 }
 
-uint32_t sigColor(int i) {
+// packs 3 bytes into one 32-bit number: format the NeoPixel library uses for colors
+uint32_t sigColor(int i) { // i is ID index (0,1,2)
   return strip.Color(SIG_COLOR[i][0], SIG_COLOR[i][1], SIG_COLOR[i][2]);
 }
 
 // ======================= Buzzer (non-blocking) =======================
+// code keeps buzzer state in variables and checks it on every pass thru loop()
 
-uint8_t  buzzPulsesLeft = 0;
-uint16_t buzzOnMs = 0, buzzOffMs = 0, buzzFreq = 0;
-uint32_t buzzNext = 0;
+uint8_t  buzzPulsesLeft = 0; // how many beeps remain
+uint16_t buzzOnMs = 0, buzzOffMs = 0, buzzFreq = 0; // on off durations, pitch
+uint32_t buzzNext = 0; // time of next changeAt
 bool     buzzerOn = false;
 
 void buzzerWrite(bool on) {
@@ -217,6 +248,7 @@ void buzzerWrite(bool on) {
   buzzerOn = on;
 }
 
+// stops any current sound, stores pattern, and schedules first change for now
 void buzz(uint8_t pulses, uint16_t onMs, uint16_t offMs, uint16_t freq) {
   buzzerWrite(false);
   buzzPulsesLeft = pulses;
@@ -253,12 +285,14 @@ Press readButton(Button& b, uint32_t now) {
   return (now - b.downAt >= LONG_PRESS_MS) ? LONG_PRESS : SHORT_PRESS;  // released
 }
 
+// switches the tracked friend, starts 1-second color flash
 void selectFriend(int i, uint32_t now) {
   selected = i;
   selectFlashUntil = now + SELECT_FLASH_MS;
   Serial.printf("Now tracking %s\n", NAMES[i]);
 }
 
+// steps to next ID (friend) then gives short 40 ms chirp
 void selectNextFriend(uint32_t now) {
   int i = selected;
   do { i = (i + 1) % NUM_DEVICES; } while (i == MY_ID);
@@ -267,15 +301,18 @@ void selectNextFriend(uint32_t now) {
 }
 
 void updateButtons(uint32_t now) {
+  // any press moves to enxt friend
   if (readButton(selectBtn, now) != NONE) selectNextFriend(now);
 
   Press p = readButton(beaconBtn, now);
+  // flips muted and records when; beeps once if muting or twice
+  // or unmuting
   if (p == LONG_PRESS) {
     muted = !muted;
     muteStart = now;
     buzz(muted ? 1 : 2, 60, 80, TONE_UI);
     Serial.println(muted ? "Tether alerts muted" : "Tether alerts on");
-  } else if (p == SHORT_PRESS) {
+  } else if (p == SHORT_PRESS) { // flips Lighthouse mode, records start time, gives a longer beep
     myLighthouse = !myLighthouse;
     lighthouseStart = now;
     buzz(1, 200, 0, TONE_UI);
@@ -285,6 +322,7 @@ void updateButtons(uint32_t now) {
 
 // ======================= Friend logic ================================
 
+// copies radio data from loop(), recording every friend excpet you
 void updateFriends(const RadioData* snap, uint32_t now) {
   for (int i = 0; i < NUM_DEVICES; i++) {
     if (i == MY_ID) continue;
@@ -294,27 +332,27 @@ void updateFriends(const RadioData* snap, uint32_t now) {
 
     // Zone
     if (!heard)                s.zone = Z_LOST;
-    else if (s.zone == Z_LOST) s.zone = rawZone(r.rssi);
+    else if (s.zone == Z_LOST) s.zone = rawZone(r.rssi); 
     else                       s.zone = nextZone(s.zone, r.rssi);
 
     // Friend's lighthouse: beep + auto-select them on rising edge
     bool lh = heard && r.lighthouse;
     if (lh && !s.lhActive) {
-      buzz(3, 300, 200, TONE_LIGHTHOUSE);
-      selectFriend(i, now);
+      buzz(3, 300, 200, TONE_LIGHTHOUSE); // play three long beeps
+      selectFriend(i, now); // automatically switch to tracking that friend
     }
     s.lhActive = lh;
 
     // Tether alert — any friend, not just the selected one
-    if (r.everSeen && s.zone >= Z_FAR) {
-      if (s.farSince == 0) s.farSince = now;
-      if (!muted && now - s.farSince > TETHER_MS &&
-          now - s.lastTetherBuzz > TETHER_REPEAT_MS) {
+    if (r.everSeen && s.zone >= Z_FAR) { // checks that we've seen this friend at some point (so board that was never on doesn't trigger alarms)
+      if (s.farSince == 0) s.farSince = now; // if timer isn't running, start timer now
+      if (!muted && now - s.farSince > TETHER_MS && // if alerts aren't muted, friend has been far for more than 8 seconds
+          now - s.lastTetherBuzz > TETHER_REPEAT_MS) { // we haven't alerted for them in the last 10 seconds: plays two beeps + record time
         buzz(2, 150, 150, TONE_TETHER);
         s.lastTetherBuzz = now;
       }
     } else {
-      s.farSince = 0;
+      s.farSince = 0; // friend back in range: reset timer
     }
   }
 }
@@ -334,7 +372,7 @@ void drawLeds(const RadioData* snap, uint32_t now) {
     if (i != MY_ID && state[i].lhActive) { lhFriend = i; break; }
   }
   if (myLighthouse || lhFriend >= 0) {
-    bool on = (now % 300) < 80;   // fast strobe
+    bool on = (now % 300) < 80;   // fast strobe, 3.3 flashes per second
     uint32_t c = myLighthouse ? strip.Color(255, 255, 255) : sigColor(lhFriend);
     strip.setBrightness(LIGHTHOUSE_BRIGHTNESS);
     strip.fill(on ? c : 0);
@@ -360,70 +398,79 @@ void drawLeds(const RadioData* snap, uint32_t now) {
   strip.show();
 }
 
-// ============================ OLED ===================================
+// ============================ LCD ====================================
+//
+//  Layout (16 x 2):
+//    Row 0:  >SAM     [b] CLOSE M      selected friend, bars, zone, flag
+//    Row 1:  JORDAN:NEAR -62dB         other friends / mode messages
+//
+//  Flag in the last column of row 0:  B = your beacon on, M = muted.
+//  Custom characters 1-4 are the signal-bar glyphs (char 0 is avoided
+//  because it would end a C string).
 
-void drawBars(int x, int y, int bars) {
-  for (int b = 0; b < 4; b++) {
-    int h = 2 + b * 2;
-    int bx = x + b * 6;
-    if (b < bars) display.fillRect(bx, y + 8 - h, 4, h, SSD1306_WHITE);
-    else          display.drawRect(bx, y + 8 - h, 4, h, SSD1306_WHITE);
-  }
+char lcdShown[LCD_ROWS][LCD_COLS + 1];   // what's currently on the screen
+
+// Pad/truncate to exactly 16 chars and only send it if it changed.
+// Rewriting unchanged text is what makes character LCDs flicker,
+// and every character costs I2C time through the PCF8574 backpack.
+void lcdWriteRow(int row, const char* text) {
+  char buf[LCD_COLS + 1];
+  int n = strlen(text);
+  for (int c = 0; c < LCD_COLS; c++) buf[c] = (c < n) ? text[c] : ' ';
+  buf[LCD_COLS] = '\0';
+  if (memcmp(buf, lcdShown[row], LCD_COLS) == 0) return;
+  memcpy(lcdShown[row], buf, LCD_COLS + 1);
+  lcd.setCursor(0, row);
+  for (int c = 0; c < LCD_COLS; c++) lcd.write((uint8_t)buf[c]);
 }
 
-void drawOled(const RadioData* snap, uint32_t now) {
-  display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
-
-  // Header
-  display.setTextSize(1);
-  display.setCursor(0, 0);
-  display.print("Me: ");
-  display.print(NAMES[MY_ID]);
-  if (myLighthouse)  display.print(" [BEACON]");
-  else if (muted)    display.print(" [MUTE]");
-
-  // Selected friend, big
-  display.setCursor(0, 12);
-  display.print("Tracking:");
-  display.setTextSize(2);
-  display.setCursor(0, 22);
-  display.print(NAMES[selected]);
-
-  // Selected friend's status
-  display.setTextSize(1);
+void drawLcd(const RadioData* snap, uint32_t now) {
   const FriendState& s = state[selected];
   const RadioData& r = snap[selected];
-  display.setCursor(0, 42);
+  char row0[32], row1[48], status[16];
+
+  // ---- Row 0: selected friend ----
   if (s.lhActive) {
-    display.print("FIND ME!");
+    snprintf(status, sizeof(status), "FIND ME");
   } else if (s.zone == Z_LOST) {
     if (!r.everSeen) {
-      display.print("not seen yet");
+      snprintf(status, sizeof(status), "unseen");
     } else {
-      display.print("lost ");
-      display.print((now - r.lastSeen) / 1000);
-      display.print("s ago");
+      unsigned long secs = (now - r.lastSeen) / 1000;
+      if (secs > 99) snprintf(status, sizeof(status), "lost99+");
+      else           snprintf(status, sizeof(status), "lost%lus", secs);
     }
   } else {
-    drawBars(0, 42, 1 + (int)(heat(r.rssi) * 3.99f));   // 1..4 bars
-    display.setCursor(30, 42);
-    display.print(ZONE_NAMES[s.zone]);
-    display.print(" ");
-    display.print((int)r.rssi);
-    display.print("dBm");
+    char bar = (char)(1 + (int)(heat(r.rssi) * 3.99f));   // glyph 1..4
+    snprintf(status, sizeof(status), "%c %s", bar, ZONE_NAMES[s.zone]);
   }
+  char flag = myLighthouse ? 'B' : (muted ? 'M' : ' ');
+  // ">" + name in 7 cols, status in 7 cols, space, flag = 16
+  snprintf(row0, sizeof(row0), ">%-7.7s%-7.7s%c", NAMES[selected], status, flag);
+  lcdWriteRow(0, row0);
 
-  // Everyone else, compact
-  display.setCursor(0, 55);
-  for (int i = 0; i < NUM_DEVICES; i++) {
-    if (i == MY_ID || i == selected) continue;
-    display.print(NAMES[i]);
-    display.print(":");
-    display.print(state[i].lhActive ? "HELP" : ZONE_NAMES[state[i].zone]);
-    display.print(" ");
+  // ---- Row 1: mode message, or the other friends + selected RSSI ----
+  if (myLighthouse) {
+    unsigned long left = (LIGHTHOUSE_MS - (now - lighthouseStart)) / 1000;
+    snprintf(row1, sizeof(row1), "BEACON ON  %lus", left);
+  } else {
+    int pos = 0;
+    row1[0] = '\0';
+    for (int i = 0; i < NUM_DEVICES; i++) {
+      if (i == MY_ID || i == selected) continue;
+      pos += snprintf(row1 + pos, sizeof(row1) - pos, "%s:%s ",
+                      NAMES[i], state[i].lhActive ? "HELP" : ZONE_NAMES[state[i].zone]);
+    }
+    // Raw dBm of the selected friend, right-aligned, if there's room (handy for calibrating)
+    if (s.zone != Z_LOST && pos <= LCD_COLS - 6) {
+      char dbm[8];
+      snprintf(dbm, sizeof(dbm), "%ddB", (int)r.rssi);
+      int col = LCD_COLS - strlen(dbm);
+      while (pos < col) row1[pos++] = ' ';
+      snprintf(row1 + pos, sizeof(row1) - pos, "%s", dbm);
+    }
   }
-  display.display();
+  lcdWriteRow(1, row1);
 }
 
 // ========================= Serial calibration ========================
@@ -452,28 +499,39 @@ void setup() {
   pinMode(BEACON_BTN_PIN, INPUT_PULLUP);
   pinMode(SELECT_BTN_PIN, INPUT_PULLUP);
 
-  strip.begin();
+  strip.begin(); // initialize LED driver
   strip.setBrightness(NORMAL_BRIGHTNESS);
   strip.fill(sigColor(MY_ID));   // boot flash in my own color
   strip.show();
 
-  Wire.begin();
-  Wire.setClock(400000);
-  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
-    Serial.println("OLED not found — continuing without display");
-    oledOK = false;
+  Wire.begin();                       // SDA 21, SCL 22
+  Wire.setClock(100000);              // PCF8574 backpacks are rated for 100 kHz
+  int lcdStatus = lcd.begin(LCD_COLS, LCD_ROWS);   // auto-detects address + pin map
+  if (lcdStatus != 0) {
+    Serial.printf("LCD not found (status %d) — continuing without display\n", lcdStatus);
+    lcdOK = false;
+  } else {
+    for (int i = 0; i < 4; i++) lcd.createChar(i + 1, (uint8_t*)BAR_GLYPHS[i]);
+    lcd.backlight();
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Lighthouse");
+    lcd.setCursor(0, 1);
+    lcd.print("I am ");
+    lcd.print(NAMES[MY_ID]);
+    memset(lcdShown, 0, sizeof(lcdShown));   // force first full redraw
   }
 
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
-  esp_wifi_set_channel(WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE);
-  WiFi.setTxPower(TX_POWER);
+  WiFi.mode(WIFI_STA); // station mode switches radio on for ESP-NOW
+  WiFi.disconnect(); // makes sure board isn't trying to join saved network
+  esp_wifi_set_channel(WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE); // fixes channel, 20 MHz width
+  WiFi.setTxPower(TX_POWER); // set transmit power
 
-  if (esp_now_init() != ESP_OK) {
+  if (esp_now_init() != ESP_OK) { // starts ESP-NOW
     Serial.println("ESP-NOW init failed");
     while (true) delay(1000);
   }
-  esp_now_register_recv_cb(onRecv);
+  esp_now_register_recv_cb(onRecv); // call onRecv for every incoming packet
 
   esp_now_peer_info_t peer = {};
   memcpy(peer.peer_addr, BCAST, 6);
@@ -488,27 +546,40 @@ void setup() {
 }
 
 void loop() {
-  static uint32_t nextBroadcast = 0, lastLed = 0, lastOled = 0, lastLog = 0;
+  static uint32_t nextBroadcast = 0, lastLed = 0, lastLcd = 0, lastLog = 0;
   uint32_t now = millis();
 
+  // handles button presses, switches Lighthouse mode off after 60s and mute off after 2 min
   updateButtons(now);
   if (myLighthouse && now - lighthouseStart > LIGHTHOUSE_MS) myLighthouse = false;
   if (muted && now - muteStart > MUTE_MS) muted = false;
 
+  // sends a packet when it's due
   if ((int32_t)(now - nextBroadcast) >= 0) {
     broadcast();
     nextBroadcast = now + BROADCAST_MS + random(0, 20);   // jitter avoids collisions
   }
 
+  // takes a snapshot
   RadioData snap[NUM_DEVICES];
   portENTER_CRITICAL(&mux);
   memcpy(snap, radio, sizeof(snap));
   portEXIT_CRITICAL(&mux);
 
+  // zomes, Lighthouse, and tether alerts are updated, buzzer pattern advances
   updateFriends(snap, now);
   updateBuzzer(now);
 
+// rate-limited tasks: LEDs at 50 Hz, Serial log at 2 Hz
   if (now - lastLed >= 20)            { drawLeds(snap, now); lastLed = now; }
-  if (oledOK && now - lastOled >= 200){ drawOled(snap, now); lastOled = now; }
+  if (lcdOK && now - lastLcd >= 250)  { drawLcd(snap, now); lastLcd = now; }
   if (now - lastLog >= 500)           { logSerial(snap, now); lastLog = now; }
 }
+
+// Notes:
+// since buzz() replaces any pattern already playing, if a tether alert and Lighthouse alert
+// fire at the same time, you only hear one of them
+// long press only register when you release button
+// unused seq field
+// while the screen refreshes, the loops pauses for about 20 ms, so don't move OLED refresh
+// into 50 Hz LED block
