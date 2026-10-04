@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Check-in · Crowd Course</title>
+<style>
+:root {
+  --ink: #000; --paper: #f2f4f7; --dim: #a3a9b4; --sos: #ff3b30;
+  --display: "Avenir Next Condensed", "Avenir Next", "Roboto Condensed", "Arial Narrow", system-ui, sans-serif;
+  --body: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--ink); color: var(--paper); font: 18px/1.45 var(--body); }
+main { max-width: 640px; margin: 0 auto; padding: 28px; }
+a { color: var(--paper); }
+h1 { font-family: var(--display); font-weight: 700; font-size: 56px; line-height: .9; margin: 18px 0 8px; }
+.nums { display: flex; gap: 36px; margin: 28px 0; }
+.nums b {
+  display: block; font-family: var(--display); font-weight: 700; font-size: 84px; line-height: .85;
+  font-variant-numeric: tabular-nums;
+}
+.nums span { color: var(--dim); }
+button {
+  background: var(--paper); color: var(--ink); border: 0; border-radius: 10px;
+  min-height: 48px; padding: 0 18px; font: inherit; font-weight: 700; cursor: pointer;
+}
+#hint { color: var(--dim); min-height: 1.4em; }
+.err { color: var(--sos); }
+</style>
+</head>
+<body>
+<main>
+  <a href="/">Crowd Course</a>
+  <h1>Responder check-in</h1>
+  <p>For the person who came to help, after an SOS. Sit still and face this camera. Presage reads pulse and breathing from the picture. The video stays on this machine, and the numbers are a wellness check, not a diagnosis.</p>
+  <div class="nums">
+    <div><b id="pulse">–</b><span>pulse</span></div>
+    <div><b id="breath">–</b><span>breaths / min</span></div>
+  </div>
+  <button id="go" type="button">Start check-in</button>
+  <p id="hint"></p>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var timer = 0;
+  var running = false;
+
+  function show(s) {
+    $('pulse').textContent = s.pulse || '–';
+    $('breath').textContent = s.breathing || '–';
+    $('hint').textContent = s.error || s.hint || '';
+    if (s.error) $('hint').className = 'err';
+    else $('hint').className = '';
+  }
+
+  async function poll() {
+    var res = await fetch('/api/checkin');
+    show(await res.json());
+  }
+
+  $('go').onclick = async function () {
+    $('hint').textContent = '';
+    if (!running) {
+      var res = await fetch('/api/checkin/start', { method: 'POST' });
+      var body = await res.json();
+      if (!res.ok) { $('hint').className = 'err'; $('hint').textContent = body.error; return; }
+      running = true;
+      $('go').textContent = 'Save and stop';
+      show(body);
+      timer = setInterval(function () { poll().catch(function () {}); }, 1000);
+    } else {
+      clearInterval(timer);
+      var res2 = await fetch('/api/checkin/stop', { method: 'POST' });
+      show(await res2.json());
+      running = false;
+      $('go').textContent = 'Start check-in';
+      $('hint').textContent = 'Saved onto the incident.';
+    }
+  };
+  poll().catch(function (e) { $('hint').textContent = e.message; });
+})();
+</script>
+</body>
+</html>

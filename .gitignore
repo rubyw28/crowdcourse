@@ -3,3 +3,5 @@ node_modules/
 .env
 .keys/
 build/
+web/cache/
+HANDOFF.md

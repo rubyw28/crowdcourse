@@ -1,135 +1,155 @@
-# Crowdsource
+# Crowd Course
 
-Bracelets that help friends find each other in a crowd. Each ESP32 bracelet listens for its friend's ESP-NOW radio signal (RSSI) and buzzes faster as they get closer, and either friend can send an SOS. A phone joins its bracelet's Wi-Fi hotspot and opens a page the bracelet serves, which shows a 0–100 closeness score, the SOS controls and a full-screen alert. No internet or app install is needed.
+Crowd Course is for the moment a crowd separates two people and the phone stops being a way back. At a show, a campus night, or a packed exit, the cell network clogs, GPS cannot tell "beside you" from "across the room," and a dead battery ends the search. That hits hardest when someone cannot stand there staring at a map: they need their eyes on the crowd, their phone died, or they only have a borrowed one.
 
-On top of that offline core, a bracelet plugged into a laptop streams everything it hears into a Tiger Data (Postgres + TimescaleDB) database. The online features read from it: an organizer dashboard, an iMessage agent and the sponsor integrations, which are in progress.
+Each person wears an ESP32 bracelet. It listens for its friends over ESP-NOW and glows from blue to red as they get closer, so the search stays on the wrist. Either person can start Lighthouse, an SOS that strobes every friend's strip in their color, beeps them, and points their bracelets at whoever needs help. The phone joins that bracelet's Wi-Fi and opens a page the bracelet serves: a 0–100 closeness score, the SOS control, and a full-screen alert. No internet, no account, no app. A borrowed phone is enough.
+
+The score is learned from this pair, in this room. Stand together, then step apart. A slow change means someone is walking. A sharp drop, while the beacons keep arriving, means a person stepped between them, and the number holds so nobody walks the wrong way.
+
+One bracelet can stay plugged into a laptop or a Raspberry Pi: the aid station. That screen is for the friend or staff member trying to help: who is apart, how they came apart, who raised SOS. It also answers questions over iMessage. Finding each other never depends on it.
+
+## Judging demo
+
+1. Two people, two bracelets, each phone on its own bracelet's hotspot at `http://192.168.4.1`.
+2. Calibrate together, then apart. Say that the band just learned this pair in this room.
+3. Walk apart until the strip turns blue. Walk back until it turns red.
+4. Have someone step between the bracelets. The page says to stay on that line, and the number holds.
+5. Start Lighthouse and have the other person acknowledge it on their phone.
+6. Text the aid station `WATCH`, then switch the walking bracelet off. The station texts that it stopped while close, so it was a band off or something in the way, not a friend walking away. Ask it "did Kate walk away?"
 
 ```
-bracelet B ))) bracelet A ──USB──> laptop bridge ──> Tiger Data ──> dashboard, iMessage agent, ...
+bracelet B ))) bracelet A ──USB──> aid station: bridge ──> Tiger Data ──> dashboard, Gemini agent, iMessage
                     │
                  phone (bracelet's own Wi-Fi, offline)
 ```
 
 ```
-index.html                    the whole phone/desktop UI in one file (no network requests, ~37 KB)
-mock-server.js                fake bracelet for working on the UI without hardware (zero dependencies)
-firmware/crowdsource/         bracelet firmware: ESP-NOW + hotspot + web page + USB telemetry (flash to both)
-firmware/crowdsource_test/    one-board firmware with a simulated friend, for testing the page on real phones
-firmware/embed_html.py        packs index.html into both sketches (run after editing index.html)
-bridge/                       laptop bridge (USB serial -> Tiger Data) and the database schema
-lib/                          shared Node helpers: .env loader, Tiger Data connection (+ its CA certificate)
-.env.example                  every key the project uses; copy to .env (git-ignored)
-crowd_source/                 3-friend bracelet sketch (LED strip, 16x2 LCD, buzzer, Lighthouse) + the same phone page
-demo/                         scripted walkthrough: demo.mp4, the page it's recorded from, and the recorder
+crowd_source/          the bracelet: sketch, its phone page (index.html), and embed_html.py, which packs the page into index_html.h
+station.js             the aid station: runs the bridge and the dashboard together (npm run station)
+bridge/                USB serial -> Tiger Data, and the database schema
+web/                   dashboard server, Gemini agent, Photon iMessage line, and the other sponsor pieces
+lib/                   .env loader and the Tiger Data connection (+ its CA certificate)
+demo/                  demo.mp4, the scripted page it was recorded from, the recorder, and a mock bracelet for UI work
 ```
 
-## Try the UI without hardware
+## The bracelets
 
-Needs Node 18+ ([nodejs.org](https://nodejs.org)); the mock has no dependencies.
+**Setup (once):** in the Arduino IDE, install the **esp32** boards package by Espressif (3.x) and the libraries **Adafruit NeoPixel**, **LiquidCrystal I2C** (Frank de Brabander), **ESP Async WebServer** and **Async TCP** (both by ESP32Async). Use the board **ESP32 Dev Module**.
+
+1. If you changed `crowd_source/index.html`, run `python3 crowd_source/embed_html.py`.
+2. Flash `crowd_source/crowd_source.ino` to each board with a **different `MY_ID`** (0, 1 or 2) at the top of the sketch. `NAMES` maps each id to a name, for example `Ruby`.
+3. On each phone, join that bracelet's Wi-Fi (`Crowdsource-<NAME>`, no password) and open `http://192.168.4.1`. Stay connected when the phone warns there's no internet.
+4. Calibrate in the room you're in: stand together, then step apart. This also retunes the LED colors and the LCD bars.
+
+Hardware: a 12-LED NeoPixel strip on pin 26, a buzzer on 14, BEACON and SELECT buttons on 13 and 12 (to GND), and a 16x2 I2C LCD on SDA 32 / SCL 33.
+
+| Control | Does |
+|---|---|
+| SELECT, short press | Track the next friend. The strip flashes that friend's color. |
+| BEACON, short press | Start or end Lighthouse (auto-off after 60 s unless started from the phone). |
+| BEACON, long press | Mute the tether alert for 2 minutes. |
+
+Every bracelet broadcasts a 9-byte packet 10 times a second on Wi-Fi channel 1, which it shares with its hotspot: its id, a Lighthouse flag, a sequence number, and whose Lighthouse its phone acknowledged. If a friend stays far or lost for 8 seconds, the buzzer sounds a tether alert.
+
+## Aid station
+
+The station is the table at the edge of the crowd. It does not find anyone. The bracelets still do that over ESP-NOW, with no station and no internet.
+
+Needs Node 20+. Copy `.env.example` to `.env` and fill in `DATABASE_URL`; every other feature turns on when its key is set.
 
 ```sh
-node mock-server.js            # http://localhost:8080
-PORT=9000 FRIEND=Sam SOS_EVERY=30 node mock-server.js
+npm install
+npm run station          # bridge + dashboard, http://<address>:8787
 ```
 
-Open the printed LAN address on a phone on the same Wi-Fi to try the phone layout. While it runs, press `s` for a friend SOS, `c` to end it, `n` / `f` to make the friend walk close or far, `l` to cut the signal, and `q` to quit. The terminal logs everything the page sends.
+Plug **one** bracelet into USB and leave it there. The other bracelet is the one that walks. On a Raspberry Pi, your user needs the serial port (`sudo usermod -aG dialout $USER`, then log back in); it is usually `/dev/ttyUSB0`. Open the dashboard from a phone on the **same network as the station**. A phone joined to a bracelet's hotspot cannot see it.
 
-## Run it on the bracelets
+### Tiger Data
 
-**Setup (once):** in the Arduino IDE, install the **esp32** boards package by Espressif (3.x) and the libraries **ESP Async WebServer** and **Async TCP** (both by ESP32Async). Use the board **ESP32 Dev Module**.
+Create a service in the [Tiger Console](https://console.cloud.tigerdata.com) (or `tiger service create --name crowdcourse --cpu shared` with the [Tiger CLI](https://github.com/timescale/tiger-cli)) and put its connection string in `.env` as `DATABASE_URL`. The bridge and the dashboard both apply [bridge/schema.sql](bridge/schema.sql) on start. It is safe to run repeatedly.
 
-1. If you changed `index.html`, run `python3 firmware/embed_html.py`.
-2. Flash `firmware/crowdsource/crowdsource.ino` to **both** boards. No per-board changes are needed: each one names itself from its chip ID.
-3. Power both boards. Within a second, each Serial Monitor (115200) shows `paired with Band XXXX`.
-4. On each phone, join that bracelet's Wi-Fi (`Crowdsource-XXXX`, no password) and open `http://192.168.4.1`. Stay connected when the phone warns there's no internet.
-5. Calibrate in the room you're in: stand together, then step apart.
-
-With no extra wiring, the **BOOT button** is the SOS button (hold 1.5 s to start or end) and the **onboard blue LED** stands in for the vibration motor. Change `BUTTON_PIN`, `HAPTIC_PIN` and `BATTERY_PIN` at the top of the sketch for real parts. Serial commands for testing without phones: `s` start/end SOS, `a` acknowledge the friend's SOS, `p` forget the friend and pair again.
-
-To check the page on real phones with a single board, flash `firmware/crowdsource_test/` instead. It fakes the friend and accepts the same keys as the mock over serial.
-
-### How the bracelets talk
-
-Each bracelet broadcasts a 28-byte beacon 10 times a second on Wi-Fi channel 6: its name, battery, an SOS flag, its SOS sequence number, and the last friend SOS number it acknowledged. The first bracelet heard with the same `GROUP_ID` becomes the friend. Because the SOS state rides in every beacon, a dropped packet can't lose an alert or an acknowledgment. Sequence numbers start at a random value on boot, so a restarted bracelet's new SOS is never mistaken for one that was already acknowledged.
-
-`crowd_source/` is a separate design (NeoPixel strip, 16x2 LCD, buzzer, up to 3 friends, "Lighthouse" mode) with its own packet format on channel 1. It doesn't talk to `firmware/crowdsource/`. It serves the same phone page from a hotspot named `Crowdsource-<NAME>`: the page shows whichever friend SELECT is tracking, its SOS turns on Lighthouse, and acknowledging a friend's Lighthouse on the phone tells their bracelet help is coming. It also prints the same `@{...}` USB telemetry, so the bridge below works with it (bracelets are named by `NAMES`, e.g. `Ruby`).
-
-## Stream bracelet data to Tiger Data
-
-1. **Create the database.** With the [Tiger CLI](https://github.com/timescale/tiger-cli):
-   ```sh
-   curl -fsSL https://cli.tigerdata.com | sh
-   tiger auth login
-   tiger service create --name crowdsource --cpu shared     # free tier
-   echo "DATABASE_URL=$(tiger db connection-string --with-password)" >> .env
-   ```
-   Or create a service in the [Tiger Console](https://console.cloud.tigerdata.com) and paste its connection string into `.env` as `DATABASE_URL`. Treat it like a password.
-2. **Install and run the bridge** with a bracelet plugged into USB:
-   ```sh
-   npm install
-   npm run bridge                          # finds the bracelet's port by itself
-   npm run bridge -- --port /dev/cu.usbserial-3 --verbose
-   ```
-   The bridge creates the tables on first run. Without `DATABASE_URL` it does a dry run and only prints what it would store. To test without hardware, pipe saved telemetry into `node bridge/bridge.js --stdin`.
-
-**What gets stored** ([bridge/schema.sql](bridge/schema.sql)):
-
-| Table | Contents |
+| Object | What it holds |
 |---|---|
-| `readings` (hypertable) | Every beacon heard: `time`, `bracelet`, `friend`, `rssi`, about 10 rows per second per pair. |
-| `events` (hypertable) | `paired`, `lost` / `found`, `my_sos`, `my_sos_acked`, `my_sos_end`, `friend_sos`, `friend_sos_acked`, `friend_sos_end`, `phone`, `calibrate`, with extra fields in `detail` (jsonb). |
-| `readings_10s` (continuous aggregate) | Average RSSI and packet count per 10 s, refreshed by TimescaleDB every 10 s. The dashboard charts from this. |
+| `readings` (hypertable) | Every beacon heard: `time`, `bracelet`, `friend`, `rssi`, about 10 rows per second per pair. Compressed to columnstore after a day, segmented by pair. |
+| `events` (hypertable) | `lost` / `found`, `my_sos`, `my_sos_acked`, `my_sos_end`, `friend_sos`, `friend_sos_acked`, `friend_sos_end`, `calibrate`, with extra fields in `detail` (jsonb). |
+| `readings_10s` (continuous aggregate) | Average RSSI and packet count per pair per 10 s, refreshed every 10 s. The chart and Gemini's history tool read this. |
+| `messages` (hypertable) | Every iMessage to and from the station. |
+| `watchers` | Who texted `WATCH`. |
 
-The firmware sends telemetry as one JSON object per serial line, prefixed with `@` so it can share the port with the human-readable log:
+The separations the dashboard lists are computed in SQL ([web/data.js](web/data.js)): window functions pair each `lost` with the next `found`, and a lateral join takes `last()` RSSI and the `regr_slope` of the 40 seconds before. A falling signal is someone walking out of range. A strong, flat one that stops is a band switched off or a body in the way. The dashboard sends its eleven queries in parallel and shows how long Tiger Data took.
+
+### Gemini
+
+With `GEMINI_API_KEY`, questions from the dashboard's Ask box and from iMessage go to an agent ([web/answer.js](web/answer.js)). It reads the live snapshot, then decides what else to look up through four tools, each a query on Tiger Data: `closeness_history`, `separations`, `signal_stats` (median, spread, beacons per second) and `recent_events`. The dashboard shows which tools it used. The line the dashboard speaks when the situation changes is a single call with a JSON response schema. If a model is over quota it sits out for a minute, and if Gemini fails entirely, the readings answer on their own.
+
+### Photon iMessage
+
+With `PHOTON_PROJECT_ID` and `PHOTON_SECRET`, the station listens on Spectrum's message stream ([web/photon.js](web/photon.js)), so it needs no public URL. Text it:
+
+| Text | Reply |
+|---|---|
+| `WATCH` | Alerts from now on: SOS, a bracelet dropping out of range (and how), and back in range after how long. |
+| `STOP` | No more alerts. |
+| anything else | The Gemini agent's answer, for example "where is Kate?" or "did she walk away?" |
+
+Numbers in `EMERGENCY_CONTACTS` always get the alerts. A link at the edge of range can flap, so lost and found alerts go out at most once per pair every 30 s.
+
+### Also on the dashboard
+
+| Feature | Needs |
+|---|---|
+| Speak with ElevenLabs | `ELEVENLABS_API_KEY`. Click the page once first; browsers block sound until then. |
+| Award Crowd Hero (Solana devnet token + memo) | Devnet SOL in the wallet created in `.keys/` ([faucet.solana.com](https://faucet.solana.com)) |
+| Responder check-in at `/checkin` (Presage pulse and breathing; video stays on the device) | `PRESAGE_API_KEY` and `npm install @smartspectra/node-sdk` |
+
+### Telemetry
+
+The bracelet prints one JSON object per serial line at 115200 baud, prefixed with `@` so it can share the port with its human-readable log:
 
 ```
-@{"ev":"rssi","me":"Band 94C1","friend":"Band 4661","rssi":-55}
-@{"ev":"friend_sos","me":"Band 94C1","friend":"Band 4661","seq":47021}
+@{"ev":"rssi","me":"Ruby","friend":"Kate","rssi":-55}
+@{"ev":"friend_sos","me":"Ruby","friend":"Kate"}
 ```
 
-Tiger Data signs connections with its own certificate authority (`ca.timescale.com`). `lib/db.js` verifies against the copy in `lib/tiger-ca.pem`, so connections stay encrypted and checked; don't switch verification off. Opening the serial port doesn't reset the bracelet, and the port name can change when you replug it, so let the bridge find it.
+`npm run bridge` runs the bridge alone (`-- --port /dev/cu.usbserial-0001 --verbose` to pick the port and echo the log). Without `DATABASE_URL` it does a dry run. To test without hardware, pipe saved telemetry into `node bridge/bridge.js --stdin`. Tiger Data signs connections with its own certificate authority; `lib/db.js` verifies against `lib/tiger-ca.pem`, so connections stay encrypted and checked.
 
 ## WebSocket contract (`/ws`, JSON text frames)
 
 The page connects to `ws://<host that served it>/ws`, which is `ws://192.168.4.1/ws` on a bracelet. You can override it in Settings (saved on the phone) or with `?ws=ws://host/ws`.
 
-### Bracelet → phone
-
-| Message | When |
+| Bracelet → phone | When |
 |---|---|
-| `{"type":"rssi","rssi":-63}` | Every time a packet from the friend arrives (2–10 Hz is ideal). |
-| `{"type":"status","name":"Alex","battery":92,"friendBattery":67}` | **At least every 2 s.** This is also the heartbeat: if the phone hears nothing for 6 s, it reconnects. `name` is the friend's name. `battery` (this bracelet) and `friendBattery` are optional. |
-| `{"type":"sos"}` | The friend started an SOS. Also sent again to a phone that connects while it's unacknowledged. |
-| `{"type":"sos_clear"}` | The friend ended their SOS. |
-| `{"type":"sos_ack"}` | The friend acknowledged *our* SOS. |
+| `{"type":"rssi","rssi":-63}` | Each packet from the friend being tracked. |
+| `{"type":"status","name":"Kate"}` | At least every 2 s; also the heartbeat. `name` is the tracked friend. |
+| `{"type":"sos"}` | The tracked friend started Lighthouse. Sent again to a phone that connects while it is unacknowledged. |
+| `{"type":"sos_clear"}` | The friend ended it. |
+| `{"type":"sos_ack"}` | A friend's phone acknowledged *our* Lighthouse. |
 
-### Phone → bracelet
-
-| Message | When |
+| Phone → bracelet | When |
 |---|---|
 | `{"type":"hello"}` | On every (re)connect. |
-| `{"type":"calibrate","near":-45,"far":-85}` | After calibrating, and again on every reconnect, so the haptics use the same thresholds as the page. |
-| `{"type":"sos"}` | The user held SOS for 1.5 s. If the socket is down, it's queued and sent on reconnect. |
-| `{"type":"sos_cancel"}` | The user ended their SOS. |
-| `{"type":"sos_ack"}` | The user acknowledged the friend's SOS. |
+| `{"type":"calibrate","near":-45,"far":-85}` | After calibrating, and on every reconnect. |
+| `{"type":"sos"}` / `{"type":"sos_cancel"}` | Start or end Lighthouse from the phone. |
+| `{"type":"sos_ack"}` | Acknowledge the friend's Lighthouse. |
 
 ## RSSI → closeness score
 
 1. **Smooth:** take the mean of the last 10 samples, dropping any older than 3 s.
 2. **Score:** `100 × (avg − far) / (near − far)`, clamped to 0–100. The defaults are near −45 dBm and far −85 dBm. RSSI is already logarithmic in distance, so this linear map spends most of its range on the last few metres, where you actually need it.
 3. **Label:** ≥70 very close, ≥40 nearby, otherwise far, with ±4 points of hysteresis so the label doesn't flicker. No RSSI for 5 s shows *lost*.
-4. **Pulse:** the period runs from 1.8 s at score 0 down to 0.35 s at score 100. The bracelet's haptics use the same curve.
-5. **Calibrate:** take the median of 5 s of raw samples standing together (near), then again standing apart (far). Far must be at least 8 dB below near.
+4. **Calibrate:** take the median of 5 s of raw samples standing together (near), then again standing apart (far).
 
-## Demo
+## Demo video
 
-`demo/demo.mp4` is an 83-second walkthrough with music, recorded from the real `index.html`. To present it live instead, run the mock and open `http://localhost:8080/demo` full screen; reload to replay (the live version has no sound).
+`demo/demo.mp4` is a walkthrough with music, recorded from the real phone page. To work on the page without hardware, or present the scripted demo live, run the mock bracelet:
 
-To re-record after changing the UI (needs Google Chrome):
+```sh
+npm run mock                   # http://localhost:8080, scripted demo at /demo
+```
+
+While it runs, press `s` for a friend SOS, `c` to end it, `n` / `f` to make the friend walk close or far, `l` to cut the signal, and `q` to quit. To re-record the video (needs Google Chrome):
 
 ```sh
 npm i --no-save puppeteer-core ffmpeg-static
 node demo/record.js            # records the video, then synthesizes the music and sound effects
 ```
-
-The soundtrack (music sections and effects) is generated by `demo/make_audio.py` from cues the page logs while it plays.

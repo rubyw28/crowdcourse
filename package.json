@@ -1,15 +1,21 @@
 {
-  "name": "crowdsource",
+  "name": "crowdcourse",
   "private": true,
-  "description": "Crowdsource: bracelets that help friends find each other in a crowd",
+  "description": "Crowd Course: bracelets that help friends find each other in a crowd",
   "scripts": {
-    "mock": "node mock-server.js",
-    "bridge": "node bridge/bridge.js"
+    "mock": "node demo/mock-server.js",
+    "bridge": "node bridge/bridge.js",
+    "web": "node web/server.js",
+    "station": "node station.js"
   },
   "dependencies": {
     "@serialport/parser-readline": "^12.0.0",
+    "@smartspectra/node-sdk": "^3.4.0",
+    "@solana/spl-token": "^0.4.14",
+    "@solana/web3.js": "^1.98.4",
     "pg": "^8.13.0",
-    "serialport": "^12.0.0"
+    "serialport": "^12.0.0",
+    "spectrum-ts": "^12.10.1"
   },
   "engines": {
     "node": ">=18"

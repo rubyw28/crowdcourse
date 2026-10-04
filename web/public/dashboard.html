@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crowd Course</title>
+<style>
+:root {
+  --ink: #000;
+  --paper: #f2f4f7;
+  --dim: #a3a9b4;
+  --cold: #5aa9ff;
+  --warm: #ffb000;
+  --hot: #fff1d6;
+  --lost: #7a808c;
+  --sos: #ff3b30;
+  --display: "Avenir Next Condensed", "Avenir Next", "Roboto Condensed", "Arial Narrow", system-ui, sans-serif;
+  --body: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --c: var(--lost);
+}
+body[data-state="far"] { --c: var(--cold); }
+body[data-state="near"] { --c: var(--warm); }
+body[data-state="close"] { --c: var(--hot); }
+body[data-state="lost"] { --c: var(--lost); }
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--ink); color: var(--paper); }
+body { font: 17px/1.45 var(--body); min-height: 100vh; }
+button, input { font: inherit; color: inherit; }
+:focus-visible { outline: 3px solid var(--paper); outline-offset: 3px; }
+a { color: var(--paper); }
+main { max-width: 1080px; margin: 0 auto; padding: 28px 28px 64px; }
+header { display: flex; justify-content: space-between; gap: 24px; align-items: baseline; }
+.word { font-family: var(--display); font-weight: 700; font-size: 28px; letter-spacing: -.02em; }
+.purpose { margin: 8px 0 0; max-width: 36em; color: var(--dim); }
+.heard { color: var(--dim); text-align: right; }
+.stage { display: grid; grid-template-columns: minmax(220px, 340px) 1fr; gap: 36px; align-items: end; margin-top: 18px; }
+.score {
+  font-family: var(--display); font-weight: 700; font-size: clamp(120px, 16vw, 196px);
+  line-height: .8; letter-spacing: -.04em; color: var(--c); font-variant-numeric: tabular-nums;
+}
+.state { font-family: var(--display); font-weight: 700; font-size: 42px; line-height: 1; margin-top: 8px; color: var(--c); }
+.meta { color: var(--dim); margin-top: 10px; }
+canvas { width: 100%; height: 220px; display: block; }
+.facts { display: flex; flex-wrap: wrap; gap: 8px 28px; color: var(--dim); margin-top: 8px; }
+.facts b { color: var(--paper); font-weight: 650; }
+.events { list-style: none; margin: 36px 0 0; padding: 0; }
+.events li { display: grid; grid-template-columns: 148px 1fr; gap: 16px; padding: 10px 0; border-top: 1px solid #23262c; }
+.events time { color: var(--dim); font-variant-numeric: tabular-nums; }
+.ask { display: flex; gap: 10px; margin-top: 36px; }
+.ask input {
+  flex: 1; background: transparent; border: 0; border-bottom: 1px solid #3a3e46;
+  padding: 12px 0; border-radius: 0;
+}
+.ask button, .row button, .badge-btn {
+  background: var(--paper); color: var(--ink); border: 0; border-radius: 10px;
+  min-height: 44px; padding: 0 16px; font-weight: 700; cursor: pointer;
+}
+.ask button:disabled, .row button:disabled { opacity: .4; cursor: default; }
+.answer { min-height: 1.4em; margin: 14px 0 0; max-width: 62ch; }
+.answer small { display: block; color: var(--dim); margin-top: 4px; }
+.row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; align-items: center; }
+.panel h2 { font: 700 15px/1 var(--body); color: var(--dim); text-transform: uppercase; letter-spacing: .08em; margin: 36px 0 4px; }
+.panel ul { list-style: none; margin: 0; padding: 0; }
+.panel li { display: grid; grid-template-columns: 148px 1fr; gap: 16px; padding: 10px 0; border-top: 1px solid #23262c; }
+.panel li time { color: var(--dim); font-variant-numeric: tabular-nums; }
+.panel .open { color: var(--sos); }
+.panel .who { color: var(--dim); }
+.badges { margin-top: 28px; }
+.badges a { display: block; padding: 8px 0; border-top: 1px solid #23262c; text-decoration: none; }
+.badges a:hover { color: var(--warm); }
+.err { color: var(--sos); }
+@media (max-width: 720px) {
+  .stage { grid-template-columns: 1fr; }
+  header { flex-direction: column; }
+  .heard { text-align: left; }
+  .events li, .panel li { grid-template-columns: 1fr; gap: 2px; }
+}
+</style>
+</head>
+<body data-state="lost">
+<main>
+  <header>
+    <div>
+      <div class="word">Crowd Course</div>
+      <p class="purpose">For the person helping. The bracelets still find each other with this screen off.</p>
+    </div>
+    <div class="heard" id="heard">Waiting for a bracelet</div>
+  </header>
+  <div class="stage">
+    <div>
+      <div class="score" id="score">–</div>
+      <div class="state" id="state">Lost</div>
+      <div class="meta" id="meta"></div>
+      <div class="meta" id="motion"></div>
+    </div>
+    <div>
+      <canvas id="chart" width="720" height="220"></canvas>
+      <div class="facts" id="facts"></div>
+    </div>
+  </div>
+  <ul class="events" id="events"></ul>
+  <section class="panel">
+    <h2>Times apart</h2>
+    <ul id="apart"></ul>
+  </section>
+  <section class="panel">
+    <h2 id="textsHead">iMessage</h2>
+    <ul id="texts"></ul>
+  </section>
+  <form class="ask" id="ask">
+    <input id="q" name="q" autocomplete="off" placeholder="Where is my friend?">
+    <button type="submit">Ask</button>
+  </form>
+  <p class="answer" id="answer"></p>
+  <div class="row">
+    <button type="button" id="say11" disabled>Speak with ElevenLabs</button>
+    <button type="button" class="badge-btn" id="badge">Award Crowd Hero</button>
+    <a href="/checkin">Responder check-in</a>
+  </div>
+  <p class="meta" id="badgeMsg"></p>
+  <div class="badges" id="badges"></div>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var last = null;
+  var audio = new Audio();
+
+  function ago(sec) {
+    if (sec < 10) return 'just now';
+    if (sec < 60) return sec + ' seconds ago';
+    if (sec < 3600) return Math.round(sec / 60) + ' min ago';
+    return Math.round(sec / 3600) + ' hr ago';
+  }
+  function when(iso) {
+    return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
+  }
+  function esc(v) {
+    return String(v == null ? '' : v).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; });
+  }
+  function duration(sec) {
+    if (sec < 90) return sec + ' s';
+    if (sec < 5400) return Math.round(sec / 60) + ' min';
+    return Math.round(sec / 360) / 10 + ' hr';
+  }
+  function kindLabel(k) {
+    return String(k || '').replace(/_/g, ' ');
+  }
+
+  function draw(series, state) {
+    var c = $('chart');
+    var g = c.getContext('2d');
+    var w = c.width, h = c.height;
+    g.clearRect(0, 0, w, h);
+    if (!series.length) {
+      g.fillStyle = '#a3a9b4';
+      g.font = '16px system-ui';
+      g.fillText('No readings in the last 12 hours', 0, 28);
+      return;
+    }
+    var color = state === 'close' ? '#fff1d6' : state === 'near' ? '#ffb000' : state === 'far' ? '#5aa9ff' : '#7a808c';
+    var pad = 16;
+    var n = series.length;
+    function x(i) { return pad + (n === 1 ? (w - pad * 2) / 2 : (i / (n - 1)) * (w - pad * 2)); }
+    function y(score) { return h - pad - (score / 100) * (h - pad * 2); }
+    g.strokeStyle = '#23262c';
+    g.lineWidth = 1;
+    [40, 70].forEach(function (mark) {
+      g.beginPath();
+      g.moveTo(pad, y(mark));
+      g.lineTo(w - pad, y(mark));
+      g.stroke();
+    });
+    g.beginPath();
+    series.forEach(function (p, i) { i ? g.lineTo(x(i), y(p.score)) : g.moveTo(x(i), y(p.score)); });
+    g.lineTo(x(n - 1), h - pad);
+    g.lineTo(x(0), h - pad);
+    g.closePath();
+    g.fillStyle = color;
+    g.globalAlpha = 0.18;
+    g.fill();
+    g.globalAlpha = 1;
+    g.beginPath();
+    series.forEach(function (p, i) { i ? g.lineTo(x(i), y(p.score)) : g.moveTo(x(i), y(p.score)); });
+    g.strokeStyle = color;
+    g.lineWidth = 2.5;
+    g.stroke();
+    g.fillStyle = color;
+    series.forEach(function (p, i) {
+      g.beginPath();
+      g.arc(x(i), y(p.score), 5, 0, Math.PI * 2);
+      g.fill();
+    });
+  }
+
+  function render(data) {
+    last = data;
+    var live = data.live;
+    document.body.dataset.state = live ? live.state : 'lost';
+    $('score').textContent = live ? live.score : '–';
+    $('state').textContent = live ? live.label : 'Lost';
+    $('heard').textContent = live ? (live.bracelet + ' hearing ' + live.friend) : 'No pair yet';
+    $('meta').textContent = live
+      ? (live.rssi + ' dBm · last heard ' + ago(live.ageSec))
+      : 'Plug a bracelet into this machine and run npm run station';
+    $('motion').textContent = data.motion && data.motion.text ? data.motion.text : '';
+    var reunion = data.reunions.length ? data.reunions[data.reunions.length - 1] : null;
+    $('facts').innerHTML =
+      '<span><b>' + data.counts.readings + '</b> beacons</span>' +
+      '<span><b>' + data.counts.buckets + '</b> ten-second averages</span>' +
+      '<span><b>' + (reunion ? reunion.seconds + 's' : '–') + '</b> last reunion</span>' +
+      '<span title="' + esc(data.timings.map(function (t) { return t.name + ' ' + t.ms.toFixed(0) + ' ms'; }).join(', ')) + '"><b>' +
+        data.timings.length + '</b> Tiger Data queries in <b>' + Math.round(data.dbMs) + ' ms</b></span>';
+    draw(data.series, live ? live.state : 'lost');
+    $('events').innerHTML = data.events.map(function (e) {
+      return '<li><time>' + when(e.time) + '</time><span>' + kindLabel(e.kind) +
+        (e.friend ? ' · ' + e.bracelet + ' and ' + e.friend : '') + '</span></li>';
+    }).join('') || '<li><time></time><span>No incidents stored yet.</span></li>';
+    $('apart').innerHTML = data.separations.map(function (s) {
+      var span = s.open ? '<span class="open">still apart, ' + duration(s.seconds) + '</span>' : 'apart ' + duration(s.seconds);
+      return '<li><time>' + when(s.lostAt) + '</time><span>' + esc(s.bracelet) + ' and ' + esc(s.friend) + ' · ' + span +
+        ' · <span class="who">' + esc(s.how) + '</span></span></li>';
+    }).join('') || '<li><time></time><span>No separations in the last 12 hours.</span></li>';
+    $('textsHead').textContent = 'iMessage' + (data.photon ? ' · ' + data.watchers + ' watching' : ' · add Photon keys to .env');
+    $('texts').innerHTML = data.messages.map(function (m) {
+      return '<li><time>' + when(m.time) + '</time><span><span class="who">' + (m.direction === 'in' ? esc(m.handle) : 'Station') +
+        '</span> ' + esc(m.body) + '</span></li>';
+    }).join('') || '<li><time></time><span>Text the station WATCH, or ask where your friend is.</span></li>';
+    $('badges').innerHTML = data.badges.map(function (b) {
+      return '<a href="' + b.explorer + '" target="_blank" rel="noopener">' +
+        when(b.time) + ' · ' + (b.note || 'Crowd Hero') + '</a>';
+    }).join('');
+    $('say11').disabled = !data.voice.elevenlabs;
+    $('say11').title = data.voice.elevenlabs ? '' : 'Add ELEVENLABS_API_KEY to .env';
+    if (!data.badges.length && data.solana && data.solana.wallet && !$('badgeMsg').textContent) {
+      $('badgeMsg').textContent = 'Devnet wallet ' + data.solana.wallet;
+    }
+  }
+
+  var heardSituation = null;
+  var lineText = '';
+
+  function showLine(body) {
+    lineText = body.say || body.text || '';
+    var brief = body.brief || body.text || '';
+    var via = body.source === 'gemini' ? 'Gemini, from the history' : 'the latest reading';
+    $('answer').innerHTML = brief + '<small>' + via + '</small>';
+  }
+
+  async function sayLine(text) {
+    var res = await fetch('/api/speak', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ engine: 'elevenlabs', text: text })
+    });
+    if (!res.ok) {
+      var err = await res.json();
+      $('answer').innerHTML = '<span class="err">' + err.error + '</span>';
+      return;
+    }
+    audio.src = URL.createObjectURL(await res.blob());
+    audio.play().catch(function () {
+      // The browser blocks sound until someone has clicked on the page once.
+      $('answer').insertAdjacentHTML('beforeend', '<small>Tap Speak with ElevenLabs to hear this.</small>');
+    });
+  }
+
+  async function follow(data) {
+    if (!data.situation || data.situation === heardSituation) return;
+    heardSituation = data.situation;
+    var res = await fetch('/api/line');
+    var body = await res.json();
+    if (!res.ok) { $('answer').innerHTML = '<span class="err">' + body.error + '</span>'; return; }
+    showLine(body);
+    var urgent = /^(sos|lost|blocked)/.test(data.situation || '');
+    if (urgent && data.voice && data.voice.elevenlabs) sayLine(body.say || body.text);
+  }
+
+  async function load() {
+    var res = await fetch('/api/overview');
+    if (!res.ok) throw new Error((await res.json()).error || res.status);
+    var data = await res.json();
+    render(data);
+    follow(data).catch(function () {});
+  }
+
+  async function speak(btn) {
+    btn.disabled = true;
+    try {
+      var text = lineText;
+      if (!text) {
+        var res = await fetch('/api/line');
+        var body = await res.json();
+        if (!res.ok) throw new Error(body.error);
+        showLine(body);
+        text = body.text;
+      }
+      await sayLine(text);
+    } catch (e) {
+      $('answer').innerHTML = '<span class="err">' + e.message + '</span>';
+    }
+    btn.disabled = false;
+  }
+
+  $('ask').onsubmit = async function (ev) {
+    ev.preventDefault();
+    var q = $('q').value.trim();
+    if (!q) return;
+    $('answer').textContent = 'Looking…';
+    var res = await fetch('/api/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: q })
+    });
+    var body = await res.json();
+    if (!res.ok) { $('answer').innerHTML = '<span class="err">' + body.error + '</span>'; return; }
+    var looked = (body.tools || []).map(function (t) { return t.name.replace(/_/g, ' '); });
+    var via = body.source === 'gemini'
+      ? 'Gemini' + (looked.length ? ', after looking up ' + looked.join(', ') + ' in Tiger Data' : '')
+      : 'the latest reading';
+    $('answer').innerHTML = esc(body.text) + '<small>From ' + via + '</small>';
+  };
+
+  $('say11').onclick = function () { speak($('say11')); };
+  $('badge').onclick = async function () {
+    $('badge').disabled = true;
+    $('badgeMsg').textContent = 'Minting on Solana devnet…';
+    var res = await fetch('/api/badge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    var body = await res.json();
+    $('badge').disabled = false;
+    if (!res.ok) { $('badgeMsg').innerHTML = '<span class="err">' + body.error + '</span>'; return; }
+    $('badgeMsg').innerHTML = 'Minted. <a href="' + body.explorer + '" target="_blank" rel="noopener">View the transaction</a>';
+    load().catch(function () {});
+  };
+
+  load().catch(function (e) { $('heard').textContent = e.message; });
+  setInterval(function () { load().catch(function () {}); }, 4000);
+})();
+</script>
+</body>
+</html>

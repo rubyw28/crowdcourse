@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Laptop bridge: reads a Crowdsource bracelet's USB serial telemetry and stores it in Tiger Data.
+// Laptop bridge: reads a Crowd Course bracelet's USB serial telemetry and stores it in Tiger Data.
 //
 //   npm install
 //   npm run bridge                    # auto-detects the bracelet's serial port
