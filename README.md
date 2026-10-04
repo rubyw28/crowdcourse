@@ -12,30 +12,6 @@ The score is learned from this pair, in this room. Stand together, then step apa
 
 One bracelet can stay plugged into a laptop or a Raspberry Pi: the aid station. That screen is for the friend or staff member trying to help: who is apart, how they came apart, who raised SOS. It also answers questions over iMessage. Finding each other never depends on it.
 
-## Judging demo
-
-1. Two people, two bracelets, each phone on its own bracelet's hotspot at `http://192.168.4.1`.
-2. Calibrate together, then apart. Say that the band just learned this pair in this room.
-3. Walk apart until the strip turns blue. Walk back until it turns red.
-4. Have someone step between the bracelets. The page says to stay on that line, and the number holds.
-5. Start Lighthouse and have the other person acknowledge it on their phone.
-6. Text the aid station `WATCH`, then switch the walking bracelet off. The station texts that it stopped while close, so it was a band off or something in the way, not a friend walking away. Ask it "did Kate walk away?"
-
-```
-bracelet B ))) bracelet A ──USB──> aid station: bridge ──> Tiger Data ──> dashboard, Gemini agent, iMessage
-                    │
-                 phone (bracelet's own Wi-Fi, offline)
-```
-
-```
-crowd_source/          the bracelet: sketch, its phone page (index.html), and embed_html.py, which packs the page into index_html.h
-station.js             the aid station: runs the bridge and the dashboard together (npm run station)
-bridge/                USB serial -> Tiger Data, and the database schema
-web/                   dashboard server, Gemini agent, and the Photon iMessage line
-lib/                   .env loader and the Tiger Data connection (+ its CA certificate)
-logo.webp              the Crowd Course logo
-```
-
 ## The bracelets
 
 **Setup (once):** in the Arduino IDE, install the **esp32** boards package by Espressif (3.x) and the libraries **Adafruit NeoPixel**, **LiquidCrystal I2C** (Frank de Brabander), **ESP Async WebServer** and **Async TCP** (both by ESP32Async). Use the board **ESP32 Dev Module**.
