@@ -3,27 +3,6 @@
 // A slow slope is someone walking. A sharp drop while packets keep arriving
 // is a body in the way, which should not be scored as the friend leaving.
 
-function stdev(xs) {
-  if (!xs.length) return 0;
-  const mean = xs.reduce((a, b) => a + b, 0) / xs.length;
-  return Math.sqrt(xs.reduce((a, b) => a + (b - mean) * (b - mean), 0) / xs.length);
-}
-
-function gauss(x, mu, sigma) {
-  const s = Math.max(Number(sigma) || 3, 3);
-  const z = (x - mu) / s;
-  return Math.exp(-0.5 * z * z) / s;
-}
-
-function scoreOfModel(rssi, cal) {
-  if (!cal || cal.nearSpread == null || cal.farSpread == null) return null;
-  const pn = gauss(rssi, cal.near, cal.nearSpread);
-  const pf = gauss(rssi, cal.far, cal.farSpread);
-  const total = pn + pf;
-  if (!total) return null;
-  return Math.max(0, Math.min(100, (100 * pn) / total));
-}
-
 const TEXT = {
   approaching: 'Getting closer',
   leaving: 'Moving apart',
@@ -32,7 +11,7 @@ const TEXT = {
 
 function interpret(samples, cal, now) {
   const window = (samples || []).filter((s) => s.t <= now && now - s.t <= 2500);
-  if (window.length < 6) return { motion: 'settling', text: '', slope: 0, score: null };
+  if (window.length < 6) return { motion: 'settling', text: '', slope: 0 };
   const n = window.length;
   const k = Math.max(1, Math.floor(n / 4));
   const avg = (arr) => arr.reduce((a, s) => a + s.r, 0) / arr.length;
@@ -63,8 +42,7 @@ function interpret(samples, cal, now) {
     motion,
     text: TEXT[motion] || '',
     slope: Math.round(slope * 10) / 10,
-    score: scoreOfModel(late, cal),
   };
 }
 
-module.exports = { stdev, scoreOfModel, interpret };
+module.exports = { interpret };

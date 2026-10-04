@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Crowdsource</title>
+<title>Crowd Course</title>
 <style>
 :root {
   --ink: #000;
@@ -59,6 +59,12 @@ canvas { width: 100%; height: 220px; display: block; }
 .answer { min-height: 1.4em; margin: 14px 0 0; max-width: 62ch; }
 .answer small { display: block; color: var(--dim); margin-top: 4px; }
 .row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; align-items: center; }
+.panel h2 { font: 700 15px/1 var(--body); color: var(--dim); text-transform: uppercase; letter-spacing: .08em; margin: 36px 0 4px; }
+.panel ul { list-style: none; margin: 0; padding: 0; }
+.panel li { display: grid; grid-template-columns: 148px 1fr; gap: 16px; padding: 10px 0; border-top: 1px solid #23262c; }
+.panel li time { color: var(--dim); font-variant-numeric: tabular-nums; }
+.panel .open { color: var(--sos); }
+.panel .who { color: var(--dim); }
 .badges { margin-top: 28px; }
 .badges a { display: block; padding: 8px 0; border-top: 1px solid #23262c; text-decoration: none; }
 .badges a:hover { color: var(--warm); }
@@ -67,7 +73,7 @@ canvas { width: 100%; height: 220px; display: block; }
   .stage { grid-template-columns: 1fr; }
   header { flex-direction: column; }
   .heard { text-align: left; }
-  .events li { grid-template-columns: 1fr; gap: 2px; }
+  .events li, .panel li { grid-template-columns: 1fr; gap: 2px; }
 }
 </style>
 </head>
@@ -75,7 +81,7 @@ canvas { width: 100%; height: 220px; display: block; }
 <main>
   <header>
     <div>
-      <div class="word">Crowdsource</div>
+      <div class="word">Crowd Course</div>
       <p class="purpose">For the person helping. The bracelets still find each other with this screen off.</p>
     </div>
     <div class="heard" id="heard">Waiting for a bracelet</div>
@@ -93,6 +99,14 @@ canvas { width: 100%; height: 220px; display: block; }
     </div>
   </div>
   <ul class="events" id="events"></ul>
+  <section class="panel">
+    <h2>Times apart</h2>
+    <ul id="apart"></ul>
+  </section>
+  <section class="panel">
+    <h2 id="textsHead">iMessage</h2>
+    <ul id="texts"></ul>
+  </section>
   <form class="ask" id="ask">
     <input id="q" name="q" autocomplete="off" placeholder="Where is my friend?">
     <button type="submit">Ask</button>
@@ -100,7 +114,6 @@ canvas { width: 100%; height: 220px; display: block; }
   <p class="answer" id="answer"></p>
   <div class="row">
     <button type="button" id="say11" disabled>Speak with ElevenLabs</button>
-    <button type="button" id="sayGrok" disabled>Speak with Grok</button>
     <button type="button" class="badge-btn" id="badge">Award Crowd Hero</button>
     <a href="/checkin">Responder check-in</a>
   </div>
@@ -121,6 +134,14 @@ canvas { width: 100%; height: 220px; display: block; }
   }
   function when(iso) {
     return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
+  }
+  function esc(v) {
+    return String(v == null ? '' : v).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; });
+  }
+  function duration(sec) {
+    if (sec < 90) return sec + ' s';
+    if (sec < 5400) return Math.round(sec / 60) + ' min';
+    return Math.round(sec / 360) / 10 + ' hr';
   }
   function kindLabel(k) {
     return String(k || '').replace(/_/g, ' ');
@@ -181,58 +202,104 @@ canvas { width: 100%; height: 220px; display: block; }
     $('heard').textContent = live ? (live.bracelet + ' hearing ' + live.friend) : 'No pair yet';
     $('meta').textContent = live
       ? (live.rssi + ' dBm · last heard ' + ago(live.ageSec))
-      : 'Plug a bracelet into this laptop and run npm run bridge';
+      : 'Plug a bracelet into this machine and run npm run station';
     $('motion').textContent = data.motion && data.motion.text ? data.motion.text : '';
     var reunion = data.reunions.length ? data.reunions[data.reunions.length - 1] : null;
     $('facts').innerHTML =
       '<span><b>' + data.counts.readings + '</b> beacons</span>' +
       '<span><b>' + data.counts.buckets + '</b> ten-second averages</span>' +
-      '<span><b>' + (reunion ? reunion.seconds + 's' : '–') + '</b> last reunion</span>';
+      '<span><b>' + (reunion ? reunion.seconds + 's' : '–') + '</b> last reunion</span>' +
+      '<span title="' + esc(data.timings.map(function (t) { return t.name + ' ' + t.ms.toFixed(0) + ' ms'; }).join(', ')) + '"><b>' +
+        data.timings.length + '</b> Tiger Data queries in <b>' + Math.round(data.dbMs) + ' ms</b></span>';
     draw(data.series, live ? live.state : 'lost');
     $('events').innerHTML = data.events.map(function (e) {
       return '<li><time>' + when(e.time) + '</time><span>' + kindLabel(e.kind) +
         (e.friend ? ' · ' + e.bracelet + ' and ' + e.friend : '') + '</span></li>';
     }).join('') || '<li><time></time><span>No incidents stored yet.</span></li>';
+    $('apart').innerHTML = data.separations.map(function (s) {
+      var span = s.open ? '<span class="open">still apart, ' + duration(s.seconds) + '</span>' : 'apart ' + duration(s.seconds);
+      return '<li><time>' + when(s.lostAt) + '</time><span>' + esc(s.bracelet) + ' and ' + esc(s.friend) + ' · ' + span +
+        ' · <span class="who">' + esc(s.how) + '</span></span></li>';
+    }).join('') || '<li><time></time><span>No separations in the last 12 hours.</span></li>';
+    $('textsHead').textContent = 'iMessage' + (data.photon ? ' · ' + data.watchers + ' watching' : ' · add Photon keys to .env');
+    $('texts').innerHTML = data.messages.map(function (m) {
+      return '<li><time>' + when(m.time) + '</time><span><span class="who">' + (m.direction === 'in' ? esc(m.handle) : 'Station') +
+        '</span> ' + esc(m.body) + '</span></li>';
+    }).join('') || '<li><time></time><span>Text the station WATCH, or ask where your friend is.</span></li>';
     $('badges').innerHTML = data.badges.map(function (b) {
       return '<a href="' + b.explorer + '" target="_blank" rel="noopener">' +
         when(b.time) + ' · ' + (b.note || 'Crowd Hero') + '</a>';
     }).join('');
     $('say11').disabled = !data.voice.elevenlabs;
-    $('sayGrok').disabled = !data.voice.grok;
     $('say11').title = data.voice.elevenlabs ? '' : 'Add ELEVENLABS_API_KEY to .env';
-    $('sayGrok').title = data.voice.grok ? '' : 'Add XAI_API_KEY to .env';
     if (!data.badges.length && data.solana && data.solana.wallet && !$('badgeMsg').textContent) {
       $('badgeMsg').textContent = 'Devnet wallet ' + data.solana.wallet;
     }
   }
 
-  function spokenLine() {
-    if (!last || !last.live) return 'No friend is in range.';
-    var live = last.live;
-    if (live.state === 'lost') return live.friend + ' was last ' + live.label.toLowerCase() + ', ' + ago(live.ageSec) + '.';
-    return live.friend + ' is ' + live.label.toLowerCase() + '. Closeness ' + live.score + '.';
+  var heardSituation = null;
+  var lineText = '';
+
+  function showLine(body) {
+    lineText = body.say || body.text || '';
+    var brief = body.brief || body.text || '';
+    var via = body.source === 'gemini' ? 'Gemini, from the history' : 'the latest reading';
+    $('answer').innerHTML = brief + '<small>' + via + '</small>';
+  }
+
+  async function sayLine(text) {
+    var res = await fetch('/api/speak', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ engine: 'elevenlabs', text: text })
+    });
+    if (!res.ok) {
+      var err = await res.json();
+      $('answer').innerHTML = '<span class="err">' + err.error + '</span>';
+      return;
+    }
+    audio.src = URL.createObjectURL(await res.blob());
+    audio.play().catch(function () {
+      // The browser blocks sound until someone has clicked on the page once.
+      $('answer').insertAdjacentHTML('beforeend', '<small>Tap Speak with ElevenLabs to hear this.</small>');
+    });
+  }
+
+  async function follow(data) {
+    if (!data.situation || data.situation === heardSituation) return;
+    heardSituation = data.situation;
+    var res = await fetch('/api/line');
+    var body = await res.json();
+    if (!res.ok) { $('answer').innerHTML = '<span class="err">' + body.error + '</span>'; return; }
+    showLine(body);
+    var urgent = /^(sos|lost|blocked)/.test(data.situation || '');
+    if (urgent && data.voice && data.voice.elevenlabs) sayLine(body.say || body.text);
   }
 
   async function load() {
     var res = await fetch('/api/overview');
     if (!res.ok) throw new Error((await res.json()).error || res.status);
-    render(await res.json());
+    var data = await res.json();
+    render(data);
+    follow(data).catch(function () {});
   }
 
-  async function speak(engine, btn) {
+  async function speak(btn) {
     btn.disabled = true;
-    var res = await fetch('/api/speak', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ engine: engine, text: spokenLine() })
-    });
-    btn.disabled = false;
-    if (!res.ok) {
-      $('answer').innerHTML = '<span class="err">' + (await res.json()).error + '</span>';
-      return;
+    try {
+      var text = lineText;
+      if (!text) {
+        var res = await fetch('/api/line');
+        var body = await res.json();
+        if (!res.ok) throw new Error(body.error);
+        showLine(body);
+        text = body.text;
+      }
+      await sayLine(text);
+    } catch (e) {
+      $('answer').innerHTML = '<span class="err">' + e.message + '</span>';
     }
-    audio.src = URL.createObjectURL(await res.blob());
-    audio.play();
+    btn.disabled = false;
   }
 
   $('ask').onsubmit = async function (ev) {
@@ -247,12 +314,14 @@ canvas { width: 100%; height: 220px; display: block; }
     });
     var body = await res.json();
     if (!res.ok) { $('answer').innerHTML = '<span class="err">' + body.error + '</span>'; return; }
-    var via = body.source === 'gemini' ? 'Gemini' : 'the latest reading';
-    $('answer').innerHTML = body.text + '<small>From ' + via + '</small>';
+    var looked = (body.tools || []).map(function (t) { return t.name.replace(/_/g, ' '); });
+    var via = body.source === 'gemini'
+      ? 'Gemini' + (looked.length ? ', after looking up ' + looked.join(', ') + ' in Tiger Data' : '')
+      : 'the latest reading';
+    $('answer').innerHTML = esc(body.text) + '<small>From ' + via + '</small>';
   };
 
-  $('say11').onclick = function () { speak('elevenlabs', $('say11')); };
-  $('sayGrok').onclick = function () { speak('grok', $('sayGrok')); };
+  $('say11').onclick = function () { speak($('say11')); };
   $('badge').onclick = async function () {
     $('badge').disabled = true;
     $('badgeMsg').textContent = 'Minting on Solana devnet…';

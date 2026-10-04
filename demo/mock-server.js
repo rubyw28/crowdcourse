@@ -2,7 +2,7 @@
 // Mock bracelet: serves index.html and speaks the same WebSocket protocol as the ESP32.
 // Zero dependencies (raw RFC 6455 framing) so it runs with plain `node mock-server.js`.
 //
-//   PORT=8080 FRIEND=Alex SOS_EVERY=60 node mock-server.js
+//   PORT=8080 FRIEND=Alex SOS_EVERY=60 node demo/mock-server.js
 //
 // Keys while running: s = friend sends SOS, c = friend cancels SOS,
 //                     n = friend walks close, f = friend walks far,
@@ -27,8 +27,8 @@ const PATH_N = 2.6;
 const RSSI_MIN = -90;
 const RSSI_MAX = -40;
 
-const INDEX = path.join(__dirname, 'index.html');
-const DEMO = path.join(__dirname, 'demo', 'stage.html');
+const INDEX = path.join(__dirname, '..', 'crowd_source', 'index.html');
+const DEMO = path.join(__dirname, 'stage.html');
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
 // ---------- helpers ----------
@@ -244,7 +244,7 @@ if (process.stdin.isTTY) {
 }
 
 server.listen(PORT, () => {
-  console.log(`Mock Crowdsource bracelet running. Open on this machine: http://localhost:${PORT}`);
+  console.log(`Mock Crowd Course bracelet running. Open on this machine: http://localhost:${PORT}`);
   for (const ifs of Object.values(os.networkInterfaces())) {
     for (const a of ifs || []) {
       if (a.family === 'IPv4' && !a.internal) console.log(`  on your phone (same Wi-Fi): http://${a.address}:${PORT}`);

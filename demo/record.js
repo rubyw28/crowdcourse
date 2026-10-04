@@ -15,14 +15,13 @@ const { spawn, spawnSync } = require('child_process');
 const puppeteer = require('puppeteer-core');
 const ffmpeg = require('ffmpeg-static');
 
-const ROOT = path.join(__dirname, '..');
 const OUT = path.resolve(process.argv[2] || path.join(__dirname, 'demo.mp4'));
 const CHROME = process.env.CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const PORT = 8123;
 const FPS = 30;
 
 (async () => {
-  const mock = spawn(process.execPath, [path.join(ROOT, 'mock-server.js')], { env: { ...process.env, PORT: String(PORT) }, stdio: 'ignore' });
+  const mock = spawn(process.execPath, [path.join(__dirname, 'mock-server.js')], { env: { ...process.env, PORT: String(PORT) }, stdio: 'ignore' });
   process.on('exit', () => mock.kill());
   await new Promise((r) => setTimeout(r, 800));
 

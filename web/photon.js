@@ -1,89 +1,74 @@
 'use strict';
-// Photon Spectrum: iMessage in, a navigator answer out.
-// Docs: https://photon.codes/docs (Stable). Reply uses spectrum-ts; the webhook only carries JSON.
-const crypto = require('crypto');
+// Photon Spectrum: the station's iMessage line. Inbound texts arrive on Spectrum's
+// message stream, so the station needs no public URL or tunnel.
+// Docs: https://photon.codes/spectrum
 
-let appPromise = null;
-const seen = new Set();
+let ready = null;
 
-function verify(raw, headers) {
-  const secret = process.env.PHOTON_WEBHOOK_SECRET;
-  const ts = headers['x-spectrum-timestamp'];
-  const sig = headers['x-spectrum-signature'] || '';
-  if (!secret) return { ok: false, reason: 'PHOTON_WEBHOOK_SECRET is not set' };
-  if (!ts || !sig) return { ok: false, reason: 'missing Spectrum signature headers' };
-  const age = Math.abs(Date.now() / 1000 - Number(ts));
-  if (age > 300) return { ok: false, reason: 'stale webhook' };
-  const mac = crypto.createHmac('sha256', secret).update(`v0:${ts}:${raw}`).digest('hex');
-  const got = sig.replace(/^v0=/, '');
-  const a = Buffer.from(mac);
-  const b = Buffer.from(got);
-  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return { ok: false, reason: 'bad signature' };
-  return { ok: true };
+function configured() {
+  return Boolean(process.env.PHOTON_PROJECT_ID && process.env.PHOTON_SECRET);
 }
 
-function messageText(message) {
-  if (!message) return '';
-  const c = message.content;
-  if (typeof c === 'string') return c;
-  if (c && typeof c.text === 'string') return c.text;
-  if (typeof message.text === 'string') return message.text;
-  return '';
-}
-
-async function spectrum() {
-  if (!process.env.PHOTON_PROJECT_ID || !process.env.PHOTON_SECRET) {
-    throw new Error('PHOTON_PROJECT_ID and PHOTON_SECRET are not set');
-  }
-  if (!appPromise) {
-    appPromise = (async () => {
+function connect() {
+  if (!configured()) throw new Error('PHOTON_PROJECT_ID and PHOTON_SECRET are not set');
+  if (!ready) {
+    ready = (async () => {
       const { Spectrum } = await import('spectrum-ts');
       const { imessage } = await import('spectrum-ts/providers/imessage');
-      return {
-        app: await Spectrum({
-          projectId: process.env.PHOTON_PROJECT_ID,
-          projectSecret: process.env.PHOTON_SECRET,
-          providers: [imessage.config()],
-          webhookSecret: process.env.PHOTON_WEBHOOK_SECRET,
-        }),
-        imessage,
-      };
+      const app = await Spectrum({
+        projectId: process.env.PHOTON_PROJECT_ID,
+        projectSecret: process.env.PHOTON_SECRET,
+        providers: [imessage.config()],
+        options: { logLevel: 'warn' },
+      });
+      return { app, im: imessage(app) };
     })();
+    ready.catch(() => { ready = null; });
   }
-  return appPromise;
+  return ready;
 }
 
-async function sendTo(spaceId, phone, text) {
-  const { app, imessage } = await spectrum();
-  const im = imessage(app);
+function textOf(message) {
+  const c = message && message.content;
+  if (!c) return '';
+  if (typeof c === 'string') return c;
+  return typeof c.text === 'string' ? c.text : '';
+}
+
+// Calls onText({ handle, spaceId, text }) for each inbound text and sends back what it returns.
+// Reconnects if the stream drops.
+async function listen(onText) {
+  for (;;) {
+    try {
+      const { app } = await connect();
+      console.log('Photon: listening for iMessages');
+      for await (const [space, message] of app.messages) {
+        if (message.direction !== 'inbound') continue;
+        const text = textOf(message).trim();
+        if (!text) continue;
+        const handle = (message.sender && message.sender.id) || 'unknown';
+        try {
+          const reply = await app.responding(space, () => onText({ handle, spaceId: space.id, text }));
+          if (reply) await space.send(reply);
+        } catch (e) {
+          console.error('Photon reply:', e.message);
+        }
+      }
+    } catch (e) {
+      console.error('Photon stream:', e.message);
+      ready = null;
+    }
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+}
+
+// Texts someone first, using their saved conversation when there is one.
+async function sendTo(handle, text, spaceId) {
+  const { im } = await connect();
   let space = null;
-  if (spaceId) {
-    try { space = await im.space.get(spaceId); } catch (e) { space = null; }
-  }
-  if (!space && phone) {
-    const user = await im.user(phone);
-    space = await im.space.create(user);
-  }
-  if (!space) throw new Error('Could not open an iMessage conversation');
+  if (spaceId) space = await im.space.get(spaceId).catch(() => null);
+  if (!space) space = await im.space.create(handle);
   await space.send(text);
 }
 
-async function alertContacts(text) {
-  const numbers = (process.env.EMERGENCY_CONTACTS || '').split(',').map((s) => s.trim()).filter(Boolean);
-  const sent = [];
-  for (const phone of numbers) {
-    await sendTo(null, phone, text);
-    sent.push(phone);
-  }
-  return sent;
-}
-
-function remember(id) {
-  if (!id) return false;
-  if (seen.has(id)) return true;
-  seen.add(id);
-  if (seen.size > 500) seen.delete(seen.values().next().value);
-  return false;
-}
-
-module.exports = { verify, messageText, sendTo, alertContacts, remember };
+module.exports = { configured, listen, sendTo };

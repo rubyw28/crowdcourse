@@ -16,4 +16,4 @@ function labelFor(score) {
 
 const LABEL = { close: 'Very close', near: 'Nearby', far: 'Far', lost: 'Lost' };
 
-module.exports = { NEAR, FAR, scoreOf, labelFor, LABEL };
+module.exports = { scoreOf, labelFor, LABEL };

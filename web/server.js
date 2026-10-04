@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Organizer dashboard and the online sponsor features.
-// The bracelets keep working with no internet. This process only reads Tiger Data.
+// Aid station dashboard, the iMessage line, and the online sponsor features.
+// The bracelets keep working with no internet. This process reads Tiger Data;
+// the bridge is what writes the bracelet's readings into it.
 //
 //   npm run web          # http://localhost:8787
 'use strict';
@@ -9,8 +10,8 @@ const http = require('http');
 const path = require('path');
 const { loadEnv } = require('../lib/env');
 const { makePool } = require('../lib/db');
-const { overview, contextText } = require('./data');
-const { answer } = require('./answer');
+const { overview, contextText, separations } = require('./data');
+const { answer, situationLine } = require('./answer');
 const { speak, engines } = require('./voice');
 const solana = require('./solana');
 const presage = require('./presage');
@@ -23,7 +24,17 @@ const PUBLIC = path.join(__dirname, 'public');
 const pages = { '/': 'dashboard.html', '/checkin': 'checkin.html' };
 
 let db = null;
-let lastSosAt = new Date();
+let lineCache = { key: '', at: 0, line: null };
+
+async function currentLine(data) {
+  const key = data.situation;
+  if (lineCache.key === key && lineCache.line && Date.now() - lineCache.at < 60000) {
+    return { ...lineCache.line, key };
+  }
+  const line = await situationLine(data, contextText(data));
+  lineCache = { key, at: Date.now(), line };
+  return { ...line, key };
+}
 
 function send(res, status, body, headers) {
   const buf = Buffer.isBuffer(body) ? body : Buffer.from(body);
@@ -44,39 +55,107 @@ async function connect() {
   await db.query(fs.readFileSync(path.join(__dirname, '..', 'bridge', 'schema.sql'), 'utf8'));
 }
 
-async function watchSos() {
-  if (!db || !process.env.EMERGENCY_CONTACTS || !process.env.PHOTON_PROJECT_ID) return;
-  try {
-    const rows = await db.query(
-      `SELECT time, bracelet, friend, kind FROM events
-       WHERE kind = 'my_sos' AND time > $1 ORDER BY time`,
-      [lastSosAt]
-    );
-    for (const row of rows.rows) {
-      lastSosAt = new Date(row.time);
-      const text = `${row.bracelet} raised an SOS${row.friend ? ` while looking for ${row.friend}` : ''}. Open the Crowdsource dashboard.`;
-      const sent = await photon.alertContacts(text);
-      console.log('SOS texted', sent.join(', ') || '(no contacts)');
+// ---------- iMessage (Photon) ----------
+
+async function logText(handle, direction, body, detail = {}) {
+  await db.query('INSERT INTO messages (handle, direction, body, detail) VALUES ($1, $2, $3, $4)',
+    [handle, direction, body, JSON.stringify(detail)]).catch((e) => console.error('Message log:', e.message));
+}
+
+// One inbound text: WATCH and STOP manage alerts, anything else is a question for the agent.
+async function onText({ handle, spaceId, text }) {
+  await logText(handle, 'in', text);
+  let reply;
+  let detail = {};
+  if (/^\s*watch\b/i.test(text)) {
+    await db.query(
+      `INSERT INTO watchers (handle, space_id) VALUES ($1, $2)
+       ON CONFLICT (handle) DO UPDATE SET space_id = EXCLUDED.space_id`,
+      [handle, spaceId || null]);
+    const data = await overview(db);
+    const who = data.live ? `${data.live.bracelet} and ${data.live.friend}` : 'the bracelets';
+    reply = `You're watching ${who}. I'll text you if one raises SOS, drops out of range, or comes back. Text STOP to end.`;
+  } else if (/^\s*(stop|unwatch)\b/i.test(text)) {
+    await db.query('DELETE FROM watchers WHERE handle = $1', [handle]);
+    reply = 'Stopped. Text WATCH to get alerts again.';
+  } else {
+    const data = await overview(db);
+    const result = await answer(text, data, contextText(data), db);
+    reply = result.text;
+    detail = { source: result.source, model: result.model, tools: (result.tools || []).map((t) => t.name) };
+  }
+  await logText(handle, 'out', reply, detail);
+  return reply;
+}
+
+async function alertWatchers(text, kind) {
+  const contacts = (process.env.EMERGENCY_CONTACTS || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const watchers = (await db.query('SELECT handle, space_id FROM watchers')).rows;
+  const to = new Map(contacts.map((h) => [h, null]));
+  for (const w of watchers) to.set(w.handle, w.space_id);
+  if (!to.size || !photon.configured()) {
+    console.log('alert', kind, text);
+    return;
+  }
+  for (const [handle, spaceId] of to) {
+    try {
+      await photon.sendTo(handle, text, spaceId);
+      await logText(handle, 'out', text, { alert: kind });
+    } catch (e) {
+      console.error(`Alert to ${handle}:`, e.message);
     }
-  } catch (e) {
-    console.error('SOS watch:', e.message);
   }
 }
 
-async function handlePhoton(req, res, raw) {
-  const headers = Object.fromEntries(Object.entries(req.headers).map(([k, v]) => [k.toLowerCase(), v]));
-  const check = photon.verify(raw.toString('utf8'), headers);
-  if (!check.ok) return json(res, 401, { error: check.reason });
-  const payload = readJson(raw);
-  const message = payload.message || {};
-  if (photon.remember(message.id)) return json(res, 200, { ok: true, duplicate: true });
-  const text = photon.messageText(message);
-  const data = await overview(db);
-  const result = await answer(text || 'Where is my friend?', data, contextText(data));
-  const space = payload.space || {};
-  const sender = message.sender || {};
-  photon.sendTo(space.id, sender.id, result.text).catch((e) => console.error('Photon reply:', e.message));
-  return json(res, 200, { ok: true });
+function minutesWords(sec) {
+  if (sec < 90) return `${sec} seconds`;
+  return `${Math.floor(sec / 60)} min ${sec % 60} s`;
+}
+
+// Turns a new bracelet event into the text a watcher gets, or null for events nobody is told about.
+async function alertFor(row) {
+  if (row.kind === 'my_sos' || row.kind === 'friend_sos') {
+    const line = await currentLine(await overview(db));
+    return `SOS from ${row.kind === 'my_sos' ? row.bracelet : row.friend}. ${line.brief || line.text}`;
+  }
+  if (row.kind === 'lost' || row.kind === 'found') {
+    const [sep] = await separations(db, [row.bracelet, row.friend], 12);
+    if (!sep) return null;
+    if (row.kind === 'lost') {
+      const close = sep.lastScore == null ? '' : ` Last closeness ${sep.lastScore} of 100.`;
+      const how = sep.lastScore == null ? '' : ` It ${sep.how}.`;
+      return `${row.bracelet} stopped hearing ${row.friend}.${close}${how} Start from where they last stood.`;
+    }
+    if (!sep.foundAt) return null;
+    return `${row.bracelet} hears ${row.friend} again after ${minutesWords(sep.seconds)} apart.`;
+  }
+  return null;
+}
+
+let seenEventAt = new Date();
+const lastAlert = new Map();
+
+async function watchEvents() {
+  try {
+    const rows = await db.query(
+      `SELECT time, bracelet, friend, kind FROM events
+       WHERE time > $1 AND kind IN ('my_sos', 'friend_sos', 'lost', 'found')
+       ORDER BY time`,
+      [seenEventAt]
+    );
+    for (const row of rows.rows) {
+      seenEventAt = new Date(row.time);
+      // A link at the edge of range flaps between lost and found. One text per pair and kind per 30 s.
+      const key = `${row.kind}:${row.bracelet}:${row.friend}`;
+      if (!/sos/.test(row.kind) && Date.now() - (lastAlert.get(key) || 0) < 30000) continue;
+      const text = await alertFor(row);
+      if (!text) continue;
+      lastAlert.set(key, Date.now());
+      await alertWatchers(text, row.kind);
+    }
+  } catch (e) {
+    console.error('Event watch:', e.message);
+  }
 }
 
 const server = http.createServer(async (req, res) => {
@@ -94,12 +173,23 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && url.pathname === '/api/overview') {
       const data = await overview(db);
-      return json(res, 200, { ...data, voice: engines(), solana: solana.status(), presage: presage.snapshot() });
+      return json(res, 200, {
+        ...data,
+        voice: engines(),
+        solana: solana.status(),
+        presage: presage.snapshot(),
+        photon: photon.configured(),
+      });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/line') {
+      const data = await overview(db);
+      return json(res, 200, await currentLine(data));
     }
 
     if (req.method === 'POST' && url.pathname === '/api/ask') {
       const data = await overview(db);
-      const result = await answer(readJson(raw).question, data, contextText(data));
+      const result = await answer(readJson(raw).question, data, contextText(data), db);
       return json(res, 200, result);
     }
 
@@ -143,10 +233,6 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, presage.snapshot());
     }
 
-    if (req.method === 'POST' && url.pathname === '/api/photon') {
-      return await handlePhoton(req, res, raw);
-    }
-
     json(res, 404, { error: 'Not found' });
   } catch (err) {
     console.error(url.pathname, err.message);
@@ -156,8 +242,9 @@ const server = http.createServer(async (req, res) => {
 
 connect()
   .then(() => {
-    server.listen(PORT, () => console.log(`Crowdsource dashboard  http://localhost:${PORT}`));
-    setInterval(watchSos, 8000);
+    server.listen(PORT, () => console.log(`Crowd Course dashboard  http://localhost:${PORT}`));
+    setInterval(watchEvents, 3000);
+    if (photon.configured()) photon.listen(onText);
   })
   .catch((err) => {
     console.error(err.message);

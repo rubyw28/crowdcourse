@@ -35,16 +35,17 @@ function pipe(name, child) {
 }
 
 function startWeb() {
+  if (stopping) return;
   web = spawn(process.execPath, [path.join(__dirname, 'web', 'server.js')], {
     cwd: __dirname,
     env: process.env,
   });
   pipe('dashboard', web);
-  web.on('exit', (code) => {
+  web.on('exit', (code, signal) => {
+    web = null;
     if (stopping) return;
-    console.error(`[dashboard] exited (${code}). Stopping the station.`);
-    shutdown();
-    process.exit(code || 1);
+    console.error(`[dashboard] exited (${signal || code}). Restarting in 3s.`);
+    setTimeout(startWeb, 3000);
   });
 }
 
@@ -72,7 +73,7 @@ function shutdown() {
 process.on('SIGINT', () => { shutdown(); process.exit(0); });
 process.on('SIGTERM', () => { shutdown(); process.exit(0); });
 
-console.log('Crowdsource aid station');
+console.log('Crowd Course aid station');
 console.log(`  on this machine   http://localhost:${PORT}`);
 for (const ip of lanUrls()) console.log(`  on the network    http://${ip}:${PORT}`);
 console.log('One bracelet stays on the USB cable. The other one walks.');
