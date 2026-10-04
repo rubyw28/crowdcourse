@@ -5,7 +5,7 @@
 //    2. SELECT button cycles which friend you're tracking; the strip
 //       flashes that friend's signature color for 1 s to confirm
 //    3. Tether alert: buzzer beeps if ANY friend stays FAR/LOST too long
-//    4. OLED: who you're tracking, their signal bars/zone, others' status
+//    4. LCD (16x2): who you're tracking, their signal bars/zone, others' status
 //    5. Lighthouse mode: your strip strobes white; friends' strips strobe
 //       in YOUR color, they get beeped, and they auto-select you
 //
@@ -16,15 +16,14 @@
 //
 //  Board:     ESP32 Dev Module
 //  Core:      Arduino-ESP32 3.x  (Boards Manager -> "esp32" by Espressif)
-//  Libraries: Adafruit NeoPixel, Adafruit SSD1306, Adafruit GFX
+//  Libraries: Adafruit NeoPixel, LiquidCrystal I2C (Frank de Brabander)
 // =====================================================================
 
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <Wire.h>
-#include <hd44780.h>
-#include <hd44780ioClass/hd44780_I2Cexp.h>
+#include <LiquidCrystal_I2C.h>
 #include <Adafruit_NeoPixel.h>
 
 // ======================= CHANGE PER BOARD ============================
@@ -40,14 +39,14 @@ const uint8_t SIG_COLOR[NUM_DEVICES][3] = {
 };
 
 // ============================ Pins ===================================
-#define LED_PIN        13
+#define LED_PIN        26
 #define NUM_LEDS       12
-#define BUZZER_PIN     25
-#define BEACON_BTN_PIN 0     // BOOT button on most dev boards; or a button to GND
-#define SELECT_BTN_PIN 27    // button between this pin and GND
-// LCD: SDA = 21, SCL = 22 (I2C address is auto-detected)
-#define LCD_COLS 16
-#define LCD_ROWS 2
+#define BUZZER_PIN     14
+#define BEACON_BTN_PIN 13    // button between this pin and GND
+#define SELECT_BTN_PIN 12    // button between this pin and GND
+#define LCD_ADDR       0x27  // 16x2 I2C LCD; power it from VIN (5 V)
+#define LCD_SDA        32
+#define LCD_SCL        33
 
 // Buzzer type:
 //   0 = ACTIVE buzzer  (beeps by itself when powered — one fixed pitch)
@@ -143,17 +142,8 @@ struct FriendState {
 FriendState state[NUM_DEVICES];
 
 Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
-
-hd44780_I2Cexp lcd;
+LiquidCrystal_I2C lcd(LCD_ADDR, 16, 2);
 bool lcdOK = true;
-
-// Custom LCD characters 1-4: signal bars of increasing height (5x8 pixels)
-const uint8_t BAR_GLYPHS[4][8] = {
-  {0, 0, 0, 0, 0, 0, 0b01110, 0b01110},                          // 1 bar
-  {0, 0, 0, 0, 0b01110, 0b01110, 0b01110, 0b01110},              // 2 bars
-  {0, 0, 0b01110, 0b01110, 0b01110, 0b01110, 0b01110, 0b01110},  // 3 bars
-  {0b01110, 0b01110, 0b01110, 0b01110, 0b01110, 0b01110, 0b01110, 0b01110}, // 4
-};
 
 // broadcast MAC address, packet sent to all-FF reaches every
 // ESP-NOW device on the channel
@@ -399,78 +389,67 @@ void drawLeds(const RadioData* snap, uint32_t now) {
 }
 
 // ============================ LCD ====================================
-//
-//  Layout (16 x 2):
-//    Row 0:  >SAM     [b] CLOSE M      selected friend, bars, zone, flag
-//    Row 1:  JORDAN:NEAR -62dB         other friends / mode messages
-//
-//  Flag in the last column of row 0:  B = your beacon on, M = muted.
-//  Custom characters 1-4 are the signal-bar glyphs (char 0 is avoided
-//  because it would end a C string).
 
-char lcdShown[LCD_ROWS][LCD_COLS + 1];   // what's currently on the screen
+// Custom characters 1-4: signal bars of increasing height (0 would end a C string)
+const uint8_t BAR_GLYPHS[4][8] = {
+  {0, 0, 0, 0, 0, 0, 0, 31},
+  {0, 0, 0, 0, 0, 31, 31, 31},
+  {0, 0, 0, 31, 31, 31, 31, 31},
+  {0, 31, 31, 31, 31, 31, 31, 31},
+};
 
-// Pad/truncate to exactly 16 chars and only send it if it changed.
-// Rewriting unchanged text is what makes character LCDs flicker,
-// and every character costs I2C time through the PCF8574 backpack.
-void lcdWriteRow(int row, const char* text) {
-  char buf[LCD_COLS + 1];
-  int n = strlen(text);
-  for (int c = 0; c < LCD_COLS; c++) buf[c] = (c < n) ? text[c] : ' ';
-  buf[LCD_COLS] = '\0';
-  if (memcmp(buf, lcdShown[row], LCD_COLS) == 0) return;
-  memcpy(lcdShown[row], buf, LCD_COLS + 1);
+// Only rewrite a row when its text changed, so the LCD doesn't flicker
+char lcdShown[2][17];
+
+void lcdRow(int row, const char* text) {
+  char buf[17];
+  snprintf(buf, sizeof(buf), "%-16s", text);
+  if (strcmp(buf, lcdShown[row]) == 0) return;
+  strcpy(lcdShown[row], buf);
   lcd.setCursor(0, row);
-  for (int c = 0; c < LCD_COLS; c++) lcd.write((uint8_t)buf[c]);
+  for (int i = 0; i < 16; i++) lcd.write((uint8_t)buf[i]);   // write() so bytes 1-4 map to bar glyphs
 }
 
 void drawLcd(const RadioData* snap, uint32_t now) {
+  char top[17], bottom[17];
   const FriendState& s = state[selected];
   const RadioData& r = snap[selected];
-  char row0[32], row1[48], status[16];
 
-  // ---- Row 0: selected friend ----
+  // Top row: selected friend and how close they are
   if (s.lhActive) {
-    snprintf(status, sizeof(status), "FIND ME");
+    snprintf(top, sizeof(top), "%-6s FIND ME!", NAMES[selected]);
   } else if (s.zone == Z_LOST) {
-    if (!r.everSeen) {
-      snprintf(status, sizeof(status), "unseen");
-    } else {
-      unsigned long secs = (now - r.lastSeen) / 1000;
-      if (secs > 99) snprintf(status, sizeof(status), "lost99+");
-      else           snprintf(status, sizeof(status), "lost%lus", secs);
-    }
+    if (!r.everSeen) snprintf(top, sizeof(top), "%-6s not seen", NAMES[selected]);
+    else             snprintf(top, sizeof(top), "%-6s lost %lus", NAMES[selected],
+                              (unsigned long)((now - r.lastSeen) / 1000));
   } else {
-    char bar = (char)(1 + (int)(heat(r.rssi) * 3.99f));   // glyph 1..4
-    snprintf(status, sizeof(status), "%c %s", bar, ZONE_NAMES[s.zone]);
+    int bars = 1 + (int)(heat(r.rssi) * 3.99f);   // 1..4
+    char b[5];
+    for (int i = 0; i < 4; i++) b[i] = i < bars ? (char)(i + 1) : ' ';
+    b[4] = 0;
+    snprintf(top, sizeof(top), "%-6s %s %s", NAMES[selected], b, ZONE_NAMES[s.zone]);
   }
-  char flag = myLighthouse ? 'B' : (muted ? 'M' : ' ');
-  // ">" + name in 7 cols, status in 7 cols, space, flag = 16
-  snprintf(row0, sizeof(row0), ">%-7.7s%-7.7s%c", NAMES[selected], status, flag);
-  lcdWriteRow(0, row0);
 
-  // ---- Row 1: mode message, or the other friends + selected RSSI ----
+  // Bottom row: my mode, or everyone else's status
   if (myLighthouse) {
-    unsigned long left = (LIGHTHOUSE_MS - (now - lighthouseStart)) / 1000;
-    snprintf(row1, sizeof(row1), "BEACON ON  %lus", left);
+    snprintf(bottom, sizeof(bottom), "** BEACON ON **");
   } else {
-    int pos = 0;
-    row1[0] = '\0';
+    int n = 0;
+    bottom[0] = 0;
     for (int i = 0; i < NUM_DEVICES; i++) {
       if (i == MY_ID || i == selected) continue;
-      pos += snprintf(row1 + pos, sizeof(row1) - pos, "%s:%s ",
-                      NAMES[i], state[i].lhActive ? "HELP" : ZONE_NAMES[state[i].zone]);
+      n += snprintf(bottom + n, sizeof(bottom) - n, "%s:%s ", NAMES[i],
+                    state[i].lhActive ? "HELP" : ZONE_NAMES[state[i].zone]);
+      if (n >= (int)sizeof(bottom)) break;
     }
-    // Raw dBm of the selected friend, right-aligned, if there's room (handy for calibrating)
-    if (s.zone != Z_LOST && pos <= LCD_COLS - 6) {
-      char dbm[8];
-      snprintf(dbm, sizeof(dbm), "%ddB", (int)r.rssi);
-      int col = LCD_COLS - strlen(dbm);
-      while (pos < col) row1[pos++] = ' ';
-      snprintf(row1 + pos, sizeof(row1) - pos, "%s", dbm);
+    if (muted) {
+      bottom[11] = 0;
+      strcat(bottom, " MUTE");
     }
   }
-  lcdWriteRow(1, row1);
+
+  lcdRow(0, top);
+  lcdRow(1, bottom);
 }
 
 // ========================= Serial calibration ========================
@@ -504,22 +483,18 @@ void setup() {
   strip.fill(sigColor(MY_ID));   // boot flash in my own color
   strip.show();
 
-  Wire.begin();                       // SDA 21, SCL 22
-  Wire.setClock(100000);              // PCF8574 backpacks are rated for 100 kHz
-  int lcdStatus = lcd.begin(LCD_COLS, LCD_ROWS);   // auto-detects address + pin map
-  if (lcdStatus != 0) {
-    Serial.printf("LCD not found (status %d) — continuing without display\n", lcdStatus);
-    lcdOK = false;
-  } else {
-    for (int i = 0; i < 4; i++) lcd.createChar(i + 1, (uint8_t*)BAR_GLYPHS[i]);
+  Wire.begin(LCD_SDA, LCD_SCL);
+  Wire.beginTransmission(LCD_ADDR);
+  lcdOK = Wire.endTransmission() == 0;
+  if (lcdOK) {
+    lcd.init();
     lcd.backlight();
+    for (int i = 0; i < 4; i++) lcd.createChar(i + 1, (uint8_t*)BAR_GLYPHS[i]);
     lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Lighthouse");
-    lcd.setCursor(0, 1);
     lcd.print("I am ");
     lcd.print(NAMES[MY_ID]);
-    memset(lcdShown, 0, sizeof(lcdShown));   // force first full redraw
+  } else {
+    Serial.println("LCD not found — continuing without display");
   }
 
   WiFi.mode(WIFI_STA); // station mode switches radio on for ESP-NOW
@@ -572,7 +547,7 @@ void loop() {
 
 // rate-limited tasks: LEDs at 50 Hz, Serial log at 2 Hz
   if (now - lastLed >= 20)            { drawLeds(snap, now); lastLed = now; }
-  if (lcdOK && now - lastLcd >= 250)  { drawLcd(snap, now); lastLcd = now; }
+  if (lcdOK && now - lastLcd >= 200)  { drawLcd(snap, now); lastLcd = now; }
   if (now - lastLog >= 500)           { logSerial(snap, now); lastLog = now; }
 }
 
