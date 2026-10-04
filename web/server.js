@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Aid station dashboard, the iMessage line, and the online sponsor features.
+// Aid station dashboard and the iMessage line.
 // The bracelets keep working with no internet. This process reads Tiger Data;
 // the bridge is what writes the bracelet's readings into it.
 //
@@ -12,16 +12,13 @@ const { loadEnv } = require('../lib/env');
 const { makePool } = require('../lib/db');
 const { overview, contextText, separations } = require('./data');
 const { answer, situationLine } = require('./answer');
-const { speak, engines } = require('./voice');
-const solana = require('./solana');
-const presage = require('./presage');
 const photon = require('./photon');
 
 loadEnv();
 
 const PORT = Number(process.env.PORT) || 8787;
 const PUBLIC = path.join(__dirname, 'public');
-const pages = { '/': 'dashboard.html', '/checkin': 'checkin.html' };
+const pages = { '/': 'dashboard.html' };
 
 let db = null;
 let lineCache = { key: '', at: 0, line: null };
@@ -116,7 +113,7 @@ function minutesWords(sec) {
 async function alertFor(row) {
   if (row.kind === 'my_sos' || row.kind === 'friend_sos') {
     const line = await currentLine(await overview(db));
-    return `SOS from ${row.kind === 'my_sos' ? row.bracelet : row.friend}. ${line.brief || line.text}`;
+    return `SOS from ${row.kind === 'my_sos' ? row.bracelet : row.friend}. ${line.text}`;
   }
   if (row.kind === 'lost' || row.kind === 'found') {
     const [sep] = await separations(db, [row.bracelet, row.friend], 12);
@@ -156,6 +153,9 @@ async function watchEvents() {
   } catch (e) {
     console.error('Event watch:', e.message);
   }
+  // Scheduled after each pass, never on a fixed interval: an SOS alert waits on Gemini,
+  // and an overlapping pass would text the same event twice.
+  setTimeout(watchEvents, 3000);
 }
 
 const server = http.createServer(async (req, res) => {
@@ -164,8 +164,6 @@ const server = http.createServer(async (req, res) => {
   const raw = Buffer.concat(chunks);
   const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
   try {
-    if (!db) return json(res, 503, { error: 'Database is not connected' });
-
     if (req.method === 'GET' && pages[url.pathname]) {
       const file = path.join(PUBLIC, pages[url.pathname]);
       return send(res, 200, fs.readFileSync(file), { 'Content-Type': 'text/html; charset=utf-8' });
@@ -173,13 +171,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && url.pathname === '/api/overview') {
       const data = await overview(db);
-      return json(res, 200, {
-        ...data,
-        voice: engines(),
-        solana: solana.status(),
-        presage: presage.snapshot(),
-        photon: photon.configured(),
-      });
+      return json(res, 200, { ...data, photon: photon.configured() });
     }
 
     if (req.method === 'GET' && url.pathname === '/api/line') {
@@ -193,46 +185,6 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, result);
     }
 
-    if (req.method === 'POST' && url.pathname === '/api/speak') {
-      const body = readJson(raw);
-      const audio = await speak(body.engine, body.text);
-      return send(res, 200, audio, { 'Content-Type': 'audio/mpeg' });
-    }
-
-    if (req.method === 'POST' && url.pathname === '/api/badge') {
-      const data = await overview(db);
-      const body = readJson(raw);
-      const live = data.live || {};
-      const minted = await solana.award({
-        bracelet: body.bracelet || live.bracelet,
-        friend: body.friend || live.friend,
-        note: body.note,
-      });
-      await db.query(
-        `INSERT INTO badges (bracelet, friend, signature, mint, explorer, note)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [live.bracelet || null, live.friend || null, minted.signature, minted.mint, minted.explorer, minted.note]
-      );
-      return json(res, 200, minted);
-    }
-
-    if (req.method === 'POST' && url.pathname === '/api/checkin/start') {
-      return json(res, 200, await presage.start());
-    }
-    if (req.method === 'POST' && url.pathname === '/api/checkin/stop') {
-      const snap = presage.snapshot();
-      if (snap.pulse || snap.breathing) {
-        await db.query(
-          'INSERT INTO checkins (pulse_bpm, breaths_pm, detail) VALUES ($1, $2, $3)',
-          [snap.pulse, snap.breathing, JSON.stringify({ hint: snap.hint })]
-        );
-      }
-      return json(res, 200, await presage.stop());
-    }
-    if (req.method === 'GET' && url.pathname === '/api/checkin') {
-      return json(res, 200, presage.snapshot());
-    }
-
     json(res, 404, { error: 'Not found' });
   } catch (err) {
     console.error(url.pathname, err.message);
@@ -243,7 +195,7 @@ const server = http.createServer(async (req, res) => {
 connect()
   .then(() => {
     server.listen(PORT, () => console.log(`Crowd Course dashboard  http://localhost:${PORT}`));
-    setInterval(watchEvents, 3000);
+    watchEvents();
     if (photon.configured()) photon.listen(onText);
   })
   .catch((err) => {

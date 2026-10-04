@@ -10,8 +10,6 @@ const os = require('os');
 const path = require('path');
 
 const PORT = process.env.PORT || '8787';
-let web = null;
-let bridge = null;
 let stopping = false;
 
 function lanUrls() {
@@ -34,40 +32,24 @@ function pipe(name, child) {
   child.stderr.on('data', write);
 }
 
-function startWeb() {
+// Runs a child script and starts it again 3 s after it exits, until the station stops.
+const children = new Map();
+function keepRunning(name, script, hint) {
   if (stopping) return;
-  web = spawn(process.execPath, [path.join(__dirname, 'web', 'server.js')], {
-    cwd: __dirname,
-    env: process.env,
-  });
-  pipe('dashboard', web);
-  web.on('exit', (code, signal) => {
-    web = null;
+  const child = spawn(process.execPath, [path.join(__dirname, script)], { cwd: __dirname, env: process.env });
+  children.set(name, child);
+  pipe(name, child);
+  child.on('exit', (code, signal) => {
+    children.delete(name);
     if (stopping) return;
-    console.error(`[dashboard] exited (${signal || code}). Restarting in 3s.`);
-    setTimeout(startWeb, 3000);
-  });
-}
-
-function startBridge() {
-  if (stopping) return;
-  bridge = spawn(process.execPath, [path.join(__dirname, 'bridge', 'bridge.js')], {
-    cwd: __dirname,
-    env: process.env,
-  });
-  pipe('bridge', bridge);
-  bridge.on('exit', (code) => {
-    bridge = null;
-    if (stopping) return;
-    console.error(`[bridge] exited (${code}). Plug the station bracelet into USB. Retrying in 3s.`);
-    setTimeout(startBridge, 3000);
+    console.error(`[${name}] exited (${signal || code}).${hint ? ` ${hint}` : ''} Restarting in 3s.`);
+    setTimeout(() => keepRunning(name, script, hint), 3000);
   });
 }
 
 function shutdown() {
   stopping = true;
-  if (web) web.kill('SIGTERM');
-  if (bridge) bridge.kill('SIGTERM');
+  for (const child of children.values()) child.kill('SIGTERM');
 }
 
 process.on('SIGINT', () => { shutdown(); process.exit(0); });
@@ -78,5 +60,5 @@ console.log(`  on this machine   http://localhost:${PORT}`);
 for (const ip of lanUrls()) console.log(`  on the network    http://${ip}:${PORT}`);
 console.log('One bracelet stays on the USB cable. The other one walks.');
 
-startWeb();
-startBridge();
+keepRunning('dashboard', 'web/server.js');
+keepRunning('bridge', 'bridge/bridge.js', 'Plug the station bracelet into USB.');

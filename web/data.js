@@ -137,7 +137,7 @@ async function overview(db) {
   const pair = row ? [row.bracelet, row.friend] : null;
 
   // Independent reads go out together on the pool.
-  const [seriesQ, events, counts, badges, checkin, recent, learned, seps, texts, watching] = await Promise.all([
+  const [seriesQ, events, counts, recent, learned, seps, texts, watching] = await Promise.all([
     pair
       ? t.q('series',
         `SELECT bucket AS t, rssi, packets FROM readings_10s
@@ -150,8 +150,6 @@ async function overview(db) {
          (SELECT count(*)::int FROM readings) AS readings,
          (SELECT count(*)::int FROM readings_10s) AS buckets,
          (SELECT count(*)::int FROM events) AS events`),
-    t.q('badges', 'SELECT time, bracelet, friend, signature, mint, explorer, note FROM badges ORDER BY time DESC LIMIT 12'),
-    t.q('checkin', 'SELECT time, pulse_bpm, breaths_pm FROM checkins ORDER BY time DESC LIMIT 1'),
     pair
       ? t.q('motion_window',
         `SELECT time, rssi FROM readings
@@ -207,8 +205,6 @@ async function overview(db) {
     separations: seps,
     events: events.rows,
     counts: counts.rows[0],
-    badges: badges.rows,
-    checkin: checkin.rows[0] || null,
     messages: texts.rows,
     watchers: watching.rows[0].n,
     motion,
@@ -220,7 +216,7 @@ async function overview(db) {
   return snapshot;
 }
 
-// Stable id for "something changed." The dashboard speaks once per id, not on every poll.
+// Stable id for "something changed." The dashboard writes a new line once per id, not on every poll.
 function situationKey(data) {
   const sos = (data.events || []).find((e) => /sos/.test(e.kind));
   if (sos && !/end|acked/.test(sos.kind)) return `sos:${sos.time}`;

@@ -27,9 +27,8 @@ bracelet B ))) bracelet A ──USB──> aid station: bridge ──> Tiger Dat
 crowd_source/          the bracelet: sketch, its phone page (index.html), and embed_html.py, which packs the page into index_html.h
 station.js             the aid station: runs the bridge and the dashboard together (npm run station)
 bridge/                USB serial -> Tiger Data, and the database schema
-web/                   dashboard server, Gemini agent, Photon iMessage line, and the other sponsor pieces
+web/                   dashboard server, Gemini agent, and the Photon iMessage line
 lib/                   .env loader and the Tiger Data connection (+ its CA certificate)
-demo/                  demo.mp4, the scripted page it was recorded from, the recorder, and a mock bracelet for UI work
 ```
 
 ## The bracelets
@@ -76,11 +75,11 @@ Create a service in the [Tiger Console](https://console.cloud.tigerdata.com) (or
 | `messages` (hypertable) | Every iMessage to and from the station. |
 | `watchers` | Who texted `WATCH`. |
 
-The separations the dashboard lists are computed in SQL ([web/data.js](web/data.js)): window functions pair each `lost` with the next `found`, and a lateral join takes `last()` RSSI and the `regr_slope` of the 40 seconds before. A falling signal is someone walking out of range. A strong, flat one that stops is a band switched off or a body in the way. The dashboard sends its eleven queries in parallel and shows how long Tiger Data took.
+The separations the dashboard lists are computed in SQL ([web/data.js](web/data.js)): window functions pair each `lost` with the next `found`, and a lateral join takes `last()` RSSI and the `regr_slope` of the 40 seconds before. A falling signal is someone walking out of range. A strong, flat one that stops is a band switched off or a body in the way. The dashboard sends its nine queries in parallel and shows how long Tiger Data took.
 
 ### Gemini
 
-With `GEMINI_API_KEY`, questions from the dashboard's Ask box and from iMessage go to an agent ([web/answer.js](web/answer.js)). It reads the live snapshot, then decides what else to look up through four tools, each a query on Tiger Data: `closeness_history`, `separations`, `signal_stats` (median, spread, beacons per second) and `recent_events`. The dashboard shows which tools it used. The line the dashboard speaks when the situation changes is a single call with a JSON response schema. If a model is over quota it sits out for a minute, and if Gemini fails entirely, the readings answer on their own.
+With `GEMINI_API_KEY`, questions from the dashboard's Ask box and from iMessage go to an agent ([web/answer.js](web/answer.js)). It reads the live snapshot, then decides what else to look up through four tools, each a query on Tiger Data: `closeness_history`, `separations`, `signal_stats` (median, spread, beacons per second) and `recent_events`. The dashboard shows which tools it used. The line the dashboard shows when the situation changes, which is also the body of an SOS text, is a single call with a JSON response schema. If a model is over quota it sits out for a minute, and if Gemini fails entirely, the readings answer on their own.
 
 ### Photon iMessage
 
@@ -93,14 +92,6 @@ With `PHOTON_PROJECT_ID` and `PHOTON_SECRET`, the station listens on Spectrum's 
 | anything else | The Gemini agent's answer, for example "where is Kate?" or "did she walk away?" |
 
 Numbers in `EMERGENCY_CONTACTS` always get the alerts. A link at the edge of range can flap, so lost and found alerts go out at most once per pair every 30 s.
-
-### Also on the dashboard
-
-| Feature | Needs |
-|---|---|
-| Speak with ElevenLabs | `ELEVENLABS_API_KEY`. Click the page once first; browsers block sound until then. |
-| Award Crowd Hero (Solana devnet token + memo) | Devnet SOL in the wallet created in `.keys/` ([faucet.solana.com](https://faucet.solana.com)) |
-| Responder check-in at `/checkin` (Presage pulse and breathing; video stays on the device) | `PRESAGE_API_KEY` and `npm install @smartspectra/node-sdk` |
 
 ### Telemetry
 
@@ -138,18 +129,3 @@ The page connects to `ws://<host that served it>/ws`, which is `ws://192.168.4.1
 2. **Score:** `100 × (avg − far) / (near − far)`, clamped to 0–100. The defaults are near −45 dBm and far −85 dBm. RSSI is already logarithmic in distance, so this linear map spends most of its range on the last few metres, where you actually need it.
 3. **Label:** ≥70 very close, ≥40 nearby, otherwise far, with ±4 points of hysteresis so the label doesn't flicker. No RSSI for 5 s shows *lost*.
 4. **Calibrate:** take the median of 5 s of raw samples standing together (near), then again standing apart (far).
-
-## Demo video
-
-`demo/demo.mp4` is a walkthrough with music, recorded from the real phone page. To work on the page without hardware, or present the scripted demo live, run the mock bracelet:
-
-```sh
-npm run mock                   # http://localhost:8080, scripted demo at /demo
-```
-
-While it runs, press `s` for a friend SOS, `c` to end it, `n` / `f` to make the friend walk close or far, `l` to cut the signal, and `q` to quit. To re-record the video (needs Google Chrome):
-
-```sh
-npm i --no-save puppeteer-core ffmpeg-static
-node demo/record.js            # records the video, then synthesizes the music and sound effects
-```
