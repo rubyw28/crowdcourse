@@ -1,0 +1,17 @@
+{
+  "name": "crowdsource",
+  "private": true,
+  "description": "Crowdsource: bracelets that help friends find each other in a crowd",
+  "scripts": {
+    "mock": "node mock-server.js",
+    "bridge": "node bridge/bridge.js"
+  },
+  "dependencies": {
+    "@serialport/parser-readline": "^12.0.0",
+    "pg": "^8.13.0",
+    "serialport": "^12.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
