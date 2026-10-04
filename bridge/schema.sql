@@ -39,17 +39,6 @@ SELECT add_continuous_aggregate_policy('readings_10s',
   schedule_interval => INTERVAL '10 seconds',
   if_not_exists     => TRUE);
 
--- On-chain Crowd Hero badges (Solana devnet) minted when an SOS is resolved.
-CREATE TABLE IF NOT EXISTS badges (
-  time       timestamptz NOT NULL DEFAULT now(),
-  bracelet   text,
-  friend     text,
-  signature  text        NOT NULL,
-  mint       text,
-  explorer   text,
-  note       text
-);
-
 -- Pulse and breathing from a Presage check-in, numbers only (no video).
 CREATE TABLE IF NOT EXISTS checkins (
   time        timestamptz NOT NULL DEFAULT now(),

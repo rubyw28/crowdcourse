@@ -51,23 +51,18 @@ canvas { width: 100%; height: 220px; display: block; }
   flex: 1; background: transparent; border: 0; border-bottom: 1px solid #3a3e46;
   padding: 12px 0; border-radius: 0;
 }
-.ask button, .row button, .badge-btn {
+.ask button {
   background: var(--paper); color: var(--ink); border: 0; border-radius: 10px;
   min-height: 44px; padding: 0 16px; font-weight: 700; cursor: pointer;
 }
-.ask button:disabled, .row button:disabled { opacity: .4; cursor: default; }
 .answer { min-height: 1.4em; margin: 14px 0 0; max-width: 62ch; }
 .answer small { display: block; color: var(--dim); margin-top: 4px; }
-.row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; align-items: center; }
 .panel h2 { font: 700 15px/1 var(--body); color: var(--dim); text-transform: uppercase; letter-spacing: .08em; margin: 36px 0 4px; }
 .panel ul { list-style: none; margin: 0; padding: 0; }
 .panel li { display: grid; grid-template-columns: 148px 1fr; gap: 16px; padding: 10px 0; border-top: 1px solid #23262c; }
 .panel li time { color: var(--dim); font-variant-numeric: tabular-nums; }
 .panel .open { color: var(--sos); }
 .panel .who { color: var(--dim); }
-.badges { margin-top: 28px; }
-.badges a { display: block; padding: 8px 0; border-top: 1px solid #23262c; text-decoration: none; }
-.badges a:hover { color: var(--warm); }
 .err { color: var(--sos); }
 @media (max-width: 720px) {
   .stage { grid-template-columns: 1fr; }
@@ -112,19 +107,11 @@ canvas { width: 100%; height: 220px; display: block; }
     <button type="submit">Ask</button>
   </form>
   <p class="answer" id="answer"></p>
-  <div class="row">
-    <button type="button" id="say11" disabled>Speak with ElevenLabs</button>
-    <button type="button" class="badge-btn" id="badge">Award Crowd Hero</button>
-    <a href="/checkin">Responder check-in</a>
-  </div>
-  <p class="meta" id="badgeMsg"></p>
-  <div class="badges" id="badges"></div>
+  <p class="meta"><a href="/checkin">Responder check-in</a></p>
 </main>
 <script>
 (function () {
   var $ = function (id) { return document.getElementById(id); };
-  var last = null;
-  var audio = new Audio();
 
   function ago(sec) {
     if (sec < 10) return 'just now';
@@ -142,6 +129,9 @@ canvas { width: 100%; height: 220px; display: block; }
     if (sec < 90) return sec + ' s';
     if (sec < 5400) return Math.round(sec / 60) + ' min';
     return Math.round(sec / 360) / 10 + ' hr';
+  }
+  function showError(message) {
+    $('answer').innerHTML = '<span class="err">' + esc(message) + '</span>';
   }
   function kindLabel(k) {
     return String(k || '').replace(/_/g, ' ');
@@ -194,7 +184,6 @@ canvas { width: 100%; height: 220px; display: block; }
   }
 
   function render(data) {
-    last = data;
     var live = data.live;
     document.body.dataset.state = live ? live.state : 'lost';
     $('score').textContent = live ? live.score : '–';
@@ -213,8 +202,8 @@ canvas { width: 100%; height: 220px; display: block; }
         data.timings.length + '</b> Tiger Data queries in <b>' + Math.round(data.dbMs) + ' ms</b></span>';
     draw(data.series, live ? live.state : 'lost');
     $('events').innerHTML = data.events.map(function (e) {
-      return '<li><time>' + when(e.time) + '</time><span>' + kindLabel(e.kind) +
-        (e.friend ? ' · ' + e.bracelet + ' and ' + e.friend : '') + '</span></li>';
+      return '<li><time>' + when(e.time) + '</time><span>' + esc(kindLabel(e.kind)) +
+        (e.friend ? ' · ' + esc(e.bracelet) + ' and ' + esc(e.friend) : '') + '</span></li>';
     }).join('') || '<li><time></time><span>No incidents stored yet.</span></li>';
     $('apart').innerHTML = data.separations.map(function (s) {
       var span = s.open ? '<span class="open">still apart, ' + duration(s.seconds) + '</span>' : 'apart ' + duration(s.seconds);
@@ -226,43 +215,13 @@ canvas { width: 100%; height: 220px; display: block; }
       return '<li><time>' + when(m.time) + '</time><span><span class="who">' + (m.direction === 'in' ? esc(m.handle) : 'Station') +
         '</span> ' + esc(m.body) + '</span></li>';
     }).join('') || '<li><time></time><span>Text the station WATCH, or ask where your friend is.</span></li>';
-    $('badges').innerHTML = data.badges.map(function (b) {
-      return '<a href="' + b.explorer + '" target="_blank" rel="noopener">' +
-        when(b.time) + ' · ' + (b.note || 'Crowd Hero') + '</a>';
-    }).join('');
-    $('say11').disabled = !data.voice.elevenlabs;
-    $('say11').title = data.voice.elevenlabs ? '' : 'Add ELEVENLABS_API_KEY to .env';
-    if (!data.badges.length && data.solana && data.solana.wallet && !$('badgeMsg').textContent) {
-      $('badgeMsg').textContent = 'Devnet wallet ' + data.solana.wallet;
-    }
   }
 
   var heardSituation = null;
-  var lineText = '';
 
   function showLine(body) {
-    lineText = body.say || body.text || '';
-    var brief = body.brief || body.text || '';
     var via = body.source === 'gemini' ? 'Gemini, from the history' : 'the latest reading';
-    $('answer').innerHTML = brief + '<small>' + via + '</small>';
-  }
-
-  async function sayLine(text) {
-    var res = await fetch('/api/speak', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ engine: 'elevenlabs', text: text })
-    });
-    if (!res.ok) {
-      var err = await res.json();
-      $('answer').innerHTML = '<span class="err">' + err.error + '</span>';
-      return;
-    }
-    audio.src = URL.createObjectURL(await res.blob());
-    audio.play().catch(function () {
-      // The browser blocks sound until someone has clicked on the page once.
-      $('answer').insertAdjacentHTML('beforeend', '<small>Tap Speak with ElevenLabs to hear this.</small>');
-    });
+    $('answer').innerHTML = esc(body.text) + '<small>' + via + '</small>';
   }
 
   async function follow(data) {
@@ -270,10 +229,8 @@ canvas { width: 100%; height: 220px; display: block; }
     heardSituation = data.situation;
     var res = await fetch('/api/line');
     var body = await res.json();
-    if (!res.ok) { $('answer').innerHTML = '<span class="err">' + body.error + '</span>'; return; }
+    if (!res.ok) { showError(body.error); return; }
     showLine(body);
-    var urgent = /^(sos|lost|blocked)/.test(data.situation || '');
-    if (urgent && data.voice && data.voice.elevenlabs) sayLine(body.say || body.text);
   }
 
   async function load() {
@@ -282,24 +239,6 @@ canvas { width: 100%; height: 220px; display: block; }
     var data = await res.json();
     render(data);
     follow(data).catch(function () {});
-  }
-
-  async function speak(btn) {
-    btn.disabled = true;
-    try {
-      var text = lineText;
-      if (!text) {
-        var res = await fetch('/api/line');
-        var body = await res.json();
-        if (!res.ok) throw new Error(body.error);
-        showLine(body);
-        text = body.text;
-      }
-      await sayLine(text);
-    } catch (e) {
-      $('answer').innerHTML = '<span class="err">' + e.message + '</span>';
-    }
-    btn.disabled = false;
   }
 
   $('ask').onsubmit = async function (ev) {
@@ -313,24 +252,12 @@ canvas { width: 100%; height: 220px; display: block; }
       body: JSON.stringify({ question: q })
     });
     var body = await res.json();
-    if (!res.ok) { $('answer').innerHTML = '<span class="err">' + body.error + '</span>'; return; }
+    if (!res.ok) { showError(body.error); return; }
     var looked = (body.tools || []).map(function (t) { return t.name.replace(/_/g, ' '); });
     var via = body.source === 'gemini'
       ? 'Gemini' + (looked.length ? ', after looking up ' + looked.join(', ') + ' in Tiger Data' : '')
       : 'the latest reading';
     $('answer').innerHTML = esc(body.text) + '<small>From ' + via + '</small>';
-  };
-
-  $('say11').onclick = function () { speak($('say11')); };
-  $('badge').onclick = async function () {
-    $('badge').disabled = true;
-    $('badgeMsg').textContent = 'Minting on Solana devnet…';
-    var res = await fetch('/api/badge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-    var body = await res.json();
-    $('badge').disabled = false;
-    if (!res.ok) { $('badgeMsg').innerHTML = '<span class="err">' + body.error + '</span>'; return; }
-    $('badgeMsg').innerHTML = 'Minted. <a href="' + body.explorer + '" target="_blank" rel="noopener">View the transaction</a>';
-    load().catch(function () {});
   };
 
   load().catch(function (e) { $('heard').textContent = e.message; });

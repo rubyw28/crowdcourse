@@ -58,7 +58,6 @@ async function start() {
     const breathing = numberNamed(decoded, /breath/i);
     if (pulse) state.pulse = Math.round(pulse);
     if (breathing) state.breathing = Math.round(breathing * 10) / 10;
-    state.detail = decoded;
     state.status = 'measuring';
   });
   sdk.on('error', (code, message) => {

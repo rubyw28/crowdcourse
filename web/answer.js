@@ -136,48 +136,33 @@ function localAnswer(question, data) {
   return where;
 }
 
-function parseBrief(text) {
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start >= 0 && end > start) {
-    try {
-      const parsed = JSON.parse(text.slice(start, end + 1));
-      if (parsed.brief && parsed.say) return { brief: String(parsed.brief).trim(), say: String(parsed.say).trim() };
-    } catch (e) { /* prose fallback */ }
-  }
-  const parts = text.split(/(?<=[.!?])\s+/).filter(Boolean);
-  return { brief: text, say: parts[parts.length - 1] || text };
+// The JSON schema should hold, but a model that wraps it in prose still gives a usable line.
+function briefOf(text) {
+  try {
+    const parsed = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1));
+    if (parsed.brief) return String(parsed.brief).trim();
+  } catch (e) { /* not JSON */ }
+  return text;
 }
 
 function localLine(data) {
   const live = data.live;
-  if (!live) return { brief: 'No friend is in range yet.', say: 'No friend is in range yet.' };
+  if (!live) return 'No friend is in range yet.';
   const sos = (data.events || []).find((e) => /sos/.test(e.kind) && !/end|acked/.test(e.kind));
   if (sos) {
-    return {
-      brief: `${sos.bracelet || live.friend} raised an SOS while the last closeness was ${live.score}. Go to them and acknowledge it on the band.`,
-      say: `${sos.bracelet || live.friend} needs help. Go now.`,
-    };
+    return `${sos.bracelet || live.friend} raised an SOS while the last closeness was ${live.score}. Go to them and acknowledge it on the band.`;
   }
   if (data.motion && data.motion.motion === 'blocked') {
-    return {
-      brief: `${live.friend} did not walk away. The signal dropped while beacons kept arriving, so someone stepped between you.`,
-      say: 'Stay on this line. Someone is between you.',
-    };
+    return `${live.friend} did not walk away. The signal dropped while beacons kept arriving, so someone stepped between you.`;
   }
   if (live.state === 'lost') {
-    return {
-      brief: `${live.bracelet} last heard ${live.friend} ${agoWords(live.ageSec)} ago at closeness ${live.score}. That is the last place, not where they are now.`,
-      say: `Signal gone. Start from where you last stood with ${live.friend}.`,
-    };
+    return `${live.bracelet} last heard ${live.friend} ${agoWords(live.ageSec)} ago at closeness ${live.score}. That is the last place, not where they are now.`;
   }
-  return {
-    brief: `${live.friend} is ${live.label.toLowerCase()} to ${live.bracelet}, closeness ${live.score}. Keep walking the way the band gets hotter.`,
-    say: live.score >= 70 ? `${live.friend} is very close. Look up.` : `Keep going. ${live.friend} is ${live.label.toLowerCase()}.`,
-  };
+  return `${live.friend} is ${live.label.toLowerCase()} to ${live.bracelet}, closeness ${live.score}. Keep walking the way the band gets hotter.`;
 }
 
-// The line the dashboard shows and speaks when the situation changes. One call, structured output.
+// The line the dashboard shows when the situation changes, and the body of an SOS text.
+// One call, structured output.
 async function situationLine(data, context) {
   if (process.env.GEMINI_API_KEY) {
     const line = await callGemini({
@@ -185,7 +170,6 @@ async function situationLine(data, context) {
       contents: [{ role: 'user', parts: [{ text: `Live data:\n${context}
 
 brief is two sentences for the person helping: what the history shows, then what to do.
-say is one short sentence to speak aloud, the action only.
 A sharp drop while packets keep arriving means a person stepped between them, not that the friend left.
 A stale reading is the last place, not the current place.
 If an SOS is open, both sentences are about getting to them.
@@ -193,20 +177,12 @@ Do not invent a walk the history does not show.` }] }],
       generationConfig: {
         ...generation,
         responseMimeType: 'application/json',
-        responseSchema: {
-          type: 'object',
-          properties: { brief: { type: 'string' }, say: { type: 'string' } },
-          required: ['brief', 'say'],
-        },
+        responseSchema: { type: 'object', properties: { brief: { type: 'string' } }, required: ['brief'] },
       },
     }).catch((e) => { console.error('Gemini line failed, using the readings:', e.message); return null; });
-    if (line) {
-      const text = textOf(line.content);
-      return { ...parseBrief(text), text, source: 'gemini', model: line.model };
-    }
+    if (line) return { text: briefOf(textOf(line.content)), source: 'gemini', model: line.model };
   }
-  const local = localLine(data);
-  return { ...local, text: local.brief, source: 'readings' };
+  return { text: localLine(data), source: 'readings' };
 }
 
 async function answer(question, data, context, db) {

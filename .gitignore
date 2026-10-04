@@ -1,7 +1,8 @@
 node_modules/
 .DS_Store
 .env
-.keys/
 build/
-web/cache/
 HANDOFF.md
+demo/
+assets/
+.keys/
