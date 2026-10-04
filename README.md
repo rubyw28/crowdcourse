@@ -1,5 +1,9 @@
 # Crowd Course
 
+<p align="center"><img src="logo.webp" alt="Crowd Course" width="420"></p>
+
+<p align="center"><b>Safety simplified. Always chart your course in a crowd.</b></p>
+
 Crowd Course is for the moment a crowd separates two people and the phone stops being a way back. At a show, a campus night, or a packed exit, the cell network clogs, GPS cannot tell "beside you" from "across the room," and a dead battery ends the search. That hits hardest when someone cannot stand there staring at a map: they need their eyes on the crowd, their phone died, or they only have a borrowed one.
 
 Each person wears an ESP32 bracelet. It listens for its friends over ESP-NOW and glows from blue to red as they get closer, so the search stays on the wrist. Either person can start Lighthouse, an SOS that strobes every friend's strip in their color, beeps them, and points their bracelets at whoever needs help. The phone joins that bracelet's Wi-Fi and opens a page the bracelet serves: a 0–100 closeness score, the SOS control, and a full-screen alert. No internet, no account, no app. A borrowed phone is enough.
@@ -29,6 +33,7 @@ station.js             the aid station: runs the bridge and the dashboard togeth
 bridge/                USB serial -> Tiger Data, and the database schema
 web/                   dashboard server, Gemini agent, and the Photon iMessage line
 lib/                   .env loader and the Tiger Data connection (+ its CA certificate)
+logo.webp              the Crowd Course logo
 ```
 
 ## The bracelets
@@ -111,7 +116,7 @@ The page connects to `ws://<host that served it>/ws`, which is `ws://192.168.4.1
 | Bracelet → phone | When |
 |---|---|
 | `{"type":"rssi","rssi":-63}` | Each packet from the friend being tracked. |
-| `{"type":"status","name":"Kate"}` | At least every 2 s; also the heartbeat. `name` is the tracked friend. |
+| `{"type":"status","name":"Kate"}` | Every second, and right away when SELECT changes friends. It is also the heartbeat: the page reconnects after 6 s of silence. `name` is the tracked friend. |
 | `{"type":"sos"}` | The tracked friend started Lighthouse. Sent again to a phone that connects while it is unacknowledged. |
 | `{"type":"sos_clear"}` | The friend ended it. |
 | `{"type":"sos_ack"}` | A friend's phone acknowledged *our* Lighthouse. |
@@ -128,4 +133,4 @@ The page connects to `ws://<host that served it>/ws`, which is `ws://192.168.4.1
 1. **Smooth:** take the mean of the last 10 samples, dropping any older than 3 s.
 2. **Score:** `100 × (avg − far) / (near − far)`, clamped to 0–100. The defaults are near −45 dBm and far −85 dBm. RSSI is already logarithmic in distance, so this linear map spends most of its range on the last few metres, where you actually need it.
 3. **Label:** ≥70 very close, ≥40 nearby, otherwise far, with ±4 points of hysteresis so the label doesn't flicker. No RSSI for 5 s shows *lost*.
-4. **Calibrate:** take the median of 5 s of raw samples standing together (near), then again standing apart (far).
+4. **Calibrate:** take the median of 5 s of raw samples standing together (near), then again standing apart (far). Far must be at least 8 dB below near.
