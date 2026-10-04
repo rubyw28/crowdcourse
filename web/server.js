@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Aid station dashboard, the iMessage line, and the responder check-in.
+// Aid station dashboard and the iMessage line.
 // The bracelets keep working with no internet. This process reads Tiger Data;
 // the bridge is what writes the bracelet's readings into it.
 //
@@ -12,14 +12,13 @@ const { loadEnv } = require('../lib/env');
 const { makePool } = require('../lib/db');
 const { overview, contextText, separations } = require('./data');
 const { answer, situationLine } = require('./answer');
-const presage = require('./presage');
 const photon = require('./photon');
 
 loadEnv();
 
 const PORT = Number(process.env.PORT) || 8787;
 const PUBLIC = path.join(__dirname, 'public');
-const pages = { '/': 'dashboard.html', '/checkin': 'checkin.html' };
+const pages = { '/': 'dashboard.html' };
 
 let db = null;
 let lineCache = { key: '', at: 0, line: null };
@@ -172,7 +171,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && url.pathname === '/api/overview') {
       const data = await overview(db);
-      return json(res, 200, { ...data, presage: presage.snapshot(), photon: photon.configured() });
+      return json(res, 200, { ...data, photon: photon.configured() });
     }
 
     if (req.method === 'GET' && url.pathname === '/api/line') {
@@ -184,23 +183,6 @@ const server = http.createServer(async (req, res) => {
       const data = await overview(db);
       const result = await answer(readJson(raw).question, data, contextText(data), db);
       return json(res, 200, result);
-    }
-
-    if (req.method === 'POST' && url.pathname === '/api/checkin/start') {
-      return json(res, 200, await presage.start());
-    }
-    if (req.method === 'POST' && url.pathname === '/api/checkin/stop') {
-      const snap = presage.snapshot();
-      if (snap.pulse || snap.breathing) {
-        await db.query(
-          'INSERT INTO checkins (pulse_bpm, breaths_pm, detail) VALUES ($1, $2, $3)',
-          [snap.pulse, snap.breathing, JSON.stringify({ hint: snap.hint })]
-        );
-      }
-      return json(res, 200, await presage.stop());
-    }
-    if (req.method === 'GET' && url.pathname === '/api/checkin') {
-      return json(res, 200, presage.snapshot());
     }
 
     json(res, 404, { error: 'Not found' });

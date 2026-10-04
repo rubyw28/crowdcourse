@@ -137,7 +137,7 @@ async function overview(db) {
   const pair = row ? [row.bracelet, row.friend] : null;
 
   // Independent reads go out together on the pool.
-  const [seriesQ, events, counts, checkin, recent, learned, seps, texts, watching] = await Promise.all([
+  const [seriesQ, events, counts, recent, learned, seps, texts, watching] = await Promise.all([
     pair
       ? t.q('series',
         `SELECT bucket AS t, rssi, packets FROM readings_10s
@@ -150,7 +150,6 @@ async function overview(db) {
          (SELECT count(*)::int FROM readings) AS readings,
          (SELECT count(*)::int FROM readings_10s) AS buckets,
          (SELECT count(*)::int FROM events) AS events`),
-    t.q('checkin', 'SELECT time, pulse_bpm, breaths_pm FROM checkins ORDER BY time DESC LIMIT 1'),
     pair
       ? t.q('motion_window',
         `SELECT time, rssi FROM readings
@@ -206,7 +205,6 @@ async function overview(db) {
     separations: seps,
     events: events.rows,
     counts: counts.rows[0],
-    checkin: checkin.rows[0] || null,
     messages: texts.rows,
     watchers: watching.rows[0].n,
     motion,

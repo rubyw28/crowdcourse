@@ -39,14 +39,6 @@ SELECT add_continuous_aggregate_policy('readings_10s',
   schedule_interval => INTERVAL '10 seconds',
   if_not_exists     => TRUE);
 
--- Pulse and breathing from a Presage check-in, numbers only (no video).
-CREATE TABLE IF NOT EXISTS checkins (
-  time        timestamptz NOT NULL DEFAULT now(),
-  pulse_bpm   real,
-  breaths_pm  real,
-  detail      jsonb       NOT NULL DEFAULT '{}'
-);
-
 -- Readings older than a day move to compressed columnstore, segmented by pair so a
 -- pair's history still reads as one contiguous run.
 DO $$

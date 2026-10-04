@@ -27,7 +27,7 @@ bracelet B ))) bracelet A ──USB──> aid station: bridge ──> Tiger Dat
 crowd_source/          the bracelet: sketch, its phone page (index.html), and embed_html.py, which packs the page into index_html.h
 station.js             the aid station: runs the bridge and the dashboard together (npm run station)
 bridge/                USB serial -> Tiger Data, and the database schema
-web/                   dashboard server, Gemini agent, Photon iMessage line, and the other sponsor pieces
+web/                   dashboard server, Gemini agent, and the Photon iMessage line
 lib/                   .env loader and the Tiger Data connection (+ its CA certificate)
 ```
 
@@ -75,7 +75,7 @@ Create a service in the [Tiger Console](https://console.cloud.tigerdata.com) (or
 | `messages` (hypertable) | Every iMessage to and from the station. |
 | `watchers` | Who texted `WATCH`. |
 
-The separations the dashboard lists are computed in SQL ([web/data.js](web/data.js)): window functions pair each `lost` with the next `found`, and a lateral join takes `last()` RSSI and the `regr_slope` of the 40 seconds before. A falling signal is someone walking out of range. A strong, flat one that stops is a band switched off or a body in the way. The dashboard sends its eleven queries in parallel and shows how long Tiger Data took.
+The separations the dashboard lists are computed in SQL ([web/data.js](web/data.js)): window functions pair each `lost` with the next `found`, and a lateral join takes `last()` RSSI and the `regr_slope` of the 40 seconds before. A falling signal is someone walking out of range. A strong, flat one that stops is a band switched off or a body in the way. The dashboard sends its nine queries in parallel and shows how long Tiger Data took.
 
 ### Gemini
 
@@ -92,10 +92,6 @@ With `PHOTON_PROJECT_ID` and `PHOTON_SECRET`, the station listens on Spectrum's 
 | anything else | The Gemini agent's answer, for example "where is Kate?" or "did she walk away?" |
 
 Numbers in `EMERGENCY_CONTACTS` always get the alerts. A link at the edge of range can flap, so lost and found alerts go out at most once per pair every 30 s.
-
-### Responder check-in
-
-`/checkin` reads the helper's pulse and breathing from the camera with Presage SmartSpectra. The video stays on the device; only the numbers are stored. Needs `PRESAGE_API_KEY` and `npm install @smartspectra/node-sdk`.
 
 ### Telemetry
 
