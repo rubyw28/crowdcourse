@@ -8,7 +8,7 @@
 //    4. LCD (16x2): who you're tracking, their signal bars/zone, others' status
 //    5. Lighthouse mode: your strip strobes white; friends' strips strobe
 //       in YOUR color, they get beeped, and they auto-select you
-//    6. Phone page: join Wi-Fi "Crowdsource-<NAME>" and open http://192.168.4.1
+//    6. Phone page: join Wi-Fi "CrowdCourse-<NAME>" and open http://192.168.4.1
 //       - shows the selected friend's closeness score (index.html)
 //       - the page's SOS = Lighthouse; a friend's Lighthouse shows as their SOS,
 //         and acknowledging it on the phone tells them help is coming
@@ -24,7 +24,7 @@
 //  Core:      Arduino-ESP32 3.x  (Boards Manager -> "esp32" by Espressif)
 //  Libraries: Adafruit NeoPixel, LiquidCrystal I2C (Frank de Brabander),
 //             ESP Async WebServer + Async TCP (both by ESP32Async)
-//  Regenerate index_html.h after editing index.html: python3 firmware/embed_html.py
+//  Regenerate index_html.h after editing index.html: python3 crowdcourse/embed_html.py
 // =====================================================================
 
 #include <WiFi.h>
@@ -694,7 +694,7 @@ void setup() {
 
   // AP+STA: the hotspot serves the phone page, and ESP-NOW rides on the hotspot's channel
   char ssid[32];
-  snprintf(ssid, sizeof(ssid), "Crowdsource-%s", NAMES[MY_ID]);
+  snprintf(ssid, sizeof(ssid), "CrowdCourse-%s", NAMES[MY_ID]);
   WiFi.mode(WIFI_AP_STA);
   WiFi.setSleep(false); // keeps ESP-NOW and the phone link responsive
   WiFi.softAP(ssid, AP_PASSWORD, WIFI_CHANNEL);

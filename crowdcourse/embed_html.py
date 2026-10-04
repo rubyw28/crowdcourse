@@ -2,7 +2,7 @@
 """Gzip the phone page into a C header so the sketch can serve it from flash.
 
 Run after every change to index.html:
-    python3 crowd_source/embed_html.py
+    python3 crowdcourse/embed_html.py
 """
 import gzip
 import pathlib

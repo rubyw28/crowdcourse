@@ -52,9 +52,9 @@ The bracelets and their phones never need the aid station or the internet. The s
 
 **Setup (once):** in the Arduino IDE, install the **esp32** boards package by Espressif (3.x) and the libraries **Adafruit NeoPixel**, **LiquidCrystal I2C** (Frank de Brabander), **ESP Async WebServer** and **Async TCP** (both by ESP32Async). Use the board **ESP32 Dev Module**.
 
-1. If you changed `crowd_source/index.html`, run `python3 crowd_source/embed_html.py`.
-2. Flash `crowd_source/crowd_source.ino` to each board with a **different `MY_ID`** (0, 1 or 2) at the top of the sketch. `NAMES` maps each id to a name, for example `Ruby`.
-3. On each phone, join that bracelet's Wi-Fi (`Crowdsource-<NAME>`, no password) and open `http://192.168.4.1`. Stay connected when the phone warns there's no internet.
+1. If you changed `crowdcourse/index.html`, run `python3 crowdcourse/embed_html.py`.
+2. Flash `crowdcourse/crowdcourse.ino` to each board with a **different `MY_ID`** (0, 1 or 2) at the top of the sketch. `NAMES` maps each id to a name, for example `Ruby`.
+3. On each phone, join that bracelet's Wi-Fi (`CrowdCourse-<NAME>`, no password) and open `http://192.168.4.1`. Stay connected when the phone warns there's no internet.
 4. Calibrate in the room you're in: stand together, then step apart. This also retunes the LED colors and the LCD bars.
 
 Hardware: a 12-LED NeoPixel strip on pin 26, a buzzer on 14, BEACON and SELECT buttons on 13 and 12 (to GND), and a 16x2 I2C LCD on SDA 32 / SCL 33.
