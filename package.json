@@ -1,6 +1,7 @@
 {
   "name": "crowdcourse",
   "private": true,
+  "license": "MIT",
   "description": "Crowd Course: bracelets that help friends find each other in a crowd",
   "scripts": {
     "bridge": "node bridge/bridge.js",
