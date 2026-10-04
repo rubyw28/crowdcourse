@@ -51,7 +51,7 @@ const uint8_t SIG_COLOR[NUM_DEVICES][3] = {
 //   0 = ACTIVE buzzer  (beeps by itself when powered — one fixed pitch)
 //   1 = PASSIVE buzzer (needs a tone signal — different pitches per alert)
 // Not sure? Apply 3.3 V directly: if it beeps, it's active.
-#define BUZZER_PASSIVE 0
+#define BUZZER_PASSIVE 1
 
 // ============================ Radio ==================================
 #define WIFI_CHANNEL  1
