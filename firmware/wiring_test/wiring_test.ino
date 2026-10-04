@@ -1,4 +1,4 @@
-// Wiring test: OLED (I2C), buttons on 12/13, passive buzzer on 25.
+// Wiring test: OLED (I2C), buttons on 12/13, passive buzzer on 14.
 // Open Serial Monitor @115200. Report repeats every 5 s.
 
 #include <Wire.h>
@@ -7,7 +7,7 @@
 
 #define BTN_A   12
 #define BTN_B   13
-#define BUZZER  25
+#define BUZZER  14
 
 // Pins to try for the OLED if it is not on 32/33
 const int CANDIDATES[] = {32, 33, 21, 22, 4, 5, 14, 15, 16, 17, 18, 19, 23, 26, 27};

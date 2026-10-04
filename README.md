@@ -19,7 +19,7 @@ firmware/embed_html.py        packs index.html into both sketches (run after edi
 bridge/                       laptop bridge (USB serial -> Tiger Data) and the database schema
 lib/                          shared Node helpers: .env loader, Tiger Data connection (+ its CA certificate)
 .env.example                  every key the project uses; copy to .env (git-ignored)
-crowd_source/                 standalone bracelet sketch (LED strip, OLED, buzzer, 3 friends; no phone)
+crowd_source/                 3-friend bracelet sketch (LED strip, 16x2 LCD, buzzer, Lighthouse) + the same phone page
 demo/                         scripted walkthrough: demo.mp4, the page it's recorded from, and the recorder
 ```
 
@@ -52,7 +52,7 @@ To check the page on real phones with a single board, flash `firmware/crowdsourc
 
 Each bracelet broadcasts a 28-byte beacon 10 times a second on Wi-Fi channel 6: its name, battery, an SOS flag, its SOS sequence number, and the last friend SOS number it acknowledged. The first bracelet heard with the same `GROUP_ID` becomes the friend. Because the SOS state rides in every beacon, a dropped packet can't lose an alert or an acknowledgment. Sequence numbers start at a random value on boot, so a restarted bracelet's new SOS is never mistaken for one that was already acknowledged.
 
-`crowd_source/` is a separate design (NeoPixel strip, OLED, buzzer, up to 3 friends, "Lighthouse" mode) with its own packet format on channel 1. It doesn't talk to `firmware/crowdsource/` yet.
+`crowd_source/` is a separate design (NeoPixel strip, 16x2 LCD, buzzer, up to 3 friends, "Lighthouse" mode) with its own packet format on channel 1. It doesn't talk to `firmware/crowdsource/`. It serves the same phone page from a hotspot named `Crowdsource-<NAME>`: the page shows whichever friend SELECT is tracking, its SOS turns on Lighthouse, and acknowledging a friend's Lighthouse on the phone tells their bracelet help is coming. It also prints the same `@{...}` USB telemetry, so the bridge below works with it (bracelets are named by `NAMES`, e.g. `Ruby`).
 
 ## Stream bracelet data to Tiger Data
 

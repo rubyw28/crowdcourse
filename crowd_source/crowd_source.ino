@@ -8,15 +8,23 @@
 //    4. LCD (16x2): who you're tracking, their signal bars/zone, others' status
 //    5. Lighthouse mode: your strip strobes white; friends' strips strobe
 //       in YOUR color, they get beeped, and they auto-select you
+//    6. Phone page: join Wi-Fi "Crowdsource-<NAME>" and open http://192.168.4.1
+//       - shows the selected friend's closeness score (index.html)
+//       - the page's SOS = Lighthouse; a friend's Lighthouse shows as their SOS,
+//         and acknowledging it on the phone tells them help is coming
+//       - calibrating on the page also retunes the LED colors and LCD bars
 //
 //  Controls:
 //    SELECT button  short press -> next friend
-//    BEACON button  short press -> toggle Lighthouse (auto-off after 60 s)
+//    BEACON button  short press -> toggle Lighthouse (auto-off after 60 s,
+//                                  unless it was started from the phone)
 //                   long press  -> toggle mute for tether alerts (2 min)
 //
 //  Board:     ESP32 Dev Module
 //  Core:      Arduino-ESP32 3.x  (Boards Manager -> "esp32" by Espressif)
-//  Libraries: Adafruit NeoPixel, LiquidCrystal I2C (Frank de Brabander)
+//  Libraries: Adafruit NeoPixel, LiquidCrystal I2C (Frank de Brabander),
+//             ESP Async WebServer + Async TCP (both by ESP32Async)
+//  Regenerate index_html.h after editing index.html: python3 firmware/embed_html.py
 // =====================================================================
 
 #include <WiFi.h>
@@ -25,13 +33,18 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <Adafruit_NeoPixel.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include "index_html.h"
 
 // ======================= CHANGE PER BOARD ============================
-#define MY_ID 0          // 0, 1 or 2 — must be unique on each bracelet
+#ifndef MY_ID
+#define MY_ID 0          // 0, 1 or 2 — must be unique on each bracelet (or pass -DMY_ID=1 when compiling)
+#endif
 
 // ================= Team config (same on every board) =================
 #define NUM_DEVICES 3
-const char* NAMES[NUM_DEVICES] = {"ALEX", "SAM", "JORDAN"};   // max ~8 chars
+const char* NAMES[NUM_DEVICES] = {"Ruby", "Kate", "Svet"};   // max ~8 chars
 const uint8_t SIG_COLOR[NUM_DEVICES][3] = {
   {0,   255, 80},   // 0: mint
   {255, 0,   200},  // 1: pink
@@ -55,24 +68,26 @@ const uint8_t SIG_COLOR[NUM_DEVICES][3] = {
 #define BUZZER_PASSIVE 1
 
 // ============================ Radio ==================================
-#define WIFI_CHANNEL  1
+#define WIFI_CHANNEL  1     // ESP-NOW and the phone hotspot share this channel
+#define AP_PASSWORD   ""    // open hotspot; 8+ chars to enable WPA2
 // Full power for real use. For a small demo room, try WIFI_POWER_2dBm
 // or WIFI_POWER_MINUS_1dBm so walking a few meters changes the color.
-#define TX_POWER      WIFI_POWER_19_5dBm // change to 2dBm for small judging room
+#define TX_POWER      WIFI_POWER_8_5dBm // middle ground: 2dBm drops out within a few meters, 19.5dBm reads "close" across a room
 #define BROADCAST_MS  100   // ~10 packets/s
 
 // ===================== RSSI tuning (CALIBRATE!) ======================
 // Open Serial Monitor @115200, stand at known distances, adjust these.
-#define RSSI_CLOSE  -55     // stronger than this = CLOSE
-#define RSSI_NEAR   -70     // stronger than this = NEAR, else FAR
-#define HYST        3       // dB of hysteresis so zones don't flicker
-#define HEAT_HOT    -45     // RSSI where the strip is fully red
-#define HEAT_COLD   -90     // RSSI where the strip is fully blue
-#define EMA_ALPHA   0.2f    // RSSI smoothing: lower = smoother but slower to react.
-  // weight given to each new RSSI sample in moving average. 0.2: average reflects last 5 samples
+#define RSSI_CLOSE  -70     // stronger than this = CLOSE
+#define RSSI_NEAR   -75     // stronger than this = NEAR, else FAR
+#define HYST        2       // dB of hysteresis so zones don't flicker
+#define HEAT_HOT    -65     // RSSI where the strip is fully red
+#define HEAT_COLD   -80     // RSSI where the strip is fully blue
+#define EMA_ALPHA   0.1f    // RSSI smoothing: lower = smoother but slower to react.
+  // weight given to each new RSSI sample in moving average. 0.1: average reflects last ~10 samples
 #define COLOR_GLIDE 0.08f   // LED color easing per frame: lower = slower fade
   // runs 50 times a second, 0.08 gives fade time of 1/4 second
 #define LOST_TIMEOUT_MS 4000 // no packets this long = LOST
+#define RSSI_DEBUG  1       // 1 = print raw + filtered RSSI of every packet from the selected friend
 
 // ============================ Alerts =================================
 #define TETHER_MS        8000    // FAR/LOST this long before beeping
@@ -103,13 +118,15 @@ enum Press { NONE, SHORT_PRESS, LONG_PRESS };
 
 #define MAGIC 0x4C48  // ASCII for "LH": ID stamped on every packet, 
 #define FLAG_LIGHTHOUSE 0x01 // one bit in flags byte, room for 7 more flags such as SOS flag
+#define NO_ACK 0xFF
 
-// packet sent over the air, 8 bytes total
+// packet sent over the air, 9 bytes total
 typedef struct __attribute__((packed)) { // __attribute__((packed)) tells computer not to insert padding bytes btwn fields
   uint16_t magic;
   uint8_t  id;
   uint8_t  flags;
   uint32_t seq; // counter that goes up with every packet, not used right now, but could measure packet loss
+  uint8_t  ackFor; // ID of the friend whose Lighthouse this bracelet's phone acknowledged, or NO_ACK
 } Packet;
 
 enum Zone { Z_CLOSE = 0, Z_NEAR = 1, Z_FAR = 2, Z_LOST = 3 };
@@ -122,6 +139,9 @@ struct RadioData {
   bool     everSeen; // whether we've heard them at least once
   uint32_t lastSeen; // when the last packet arrived, as ms since boot
   bool     lighthouse; // whether lighthouse flag is set
+  int8_t   rawRssi; // unsmoothed RSSI of the last packet (the phone page does its own smoothing)
+  uint32_t count; // packets received, so loop() can tell when a new one arrived
+  uint8_t  ackFor; // whose Lighthouse they acknowledged, or NO_ACK
 };
 RadioData radio[NUM_DEVICES]; // global array, starts out all zeros
 portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED; 
@@ -129,7 +149,7 @@ portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 // which can be on the other CPU core at the same moment. Without protection,
 // loop() could read a half-updated record. portMUX_TYPE is a spinlock
 // code between portENTER_CRITICAL(&mux) and portEXIT_CRITICAL(&mux) can't be
-// interrupted so toher core waits until lock is released
+// interrupted so the other core waits until lock is released
 
 // Only touched by loop()
 struct FriendState {
@@ -156,6 +176,23 @@ uint32_t lighthouseStart = 0;
 bool     muted = false;
 uint32_t muteStart = 0;
 
+// Phone page
+AsyncWebServer server(80);
+AsyncWebSocket ws("/ws");
+bool     lighthouseFromPhone = false; // phone SOS: no 60 s auto-off (the page can't be told it ended)
+bool     myLighthouseAcked = false;   // a friend's phone acknowledged my Lighthouse
+int      pageSosFor = -1;             // friend whose Lighthouse the page is showing as an SOS
+int      ackedFor = -1;               // friend whose Lighthouse my phone acknowledged
+float    calNear = HEAT_HOT, calFar = HEAT_COLD;   // RSSI for fully close / fully far; set from the page
+
+// ========================= USB telemetry =============================
+// One JSON object per line, prefixed with '@', for the laptop bridge (bridge/bridge.js).
+// Only call from loop() so lines from two tasks never interleave.
+void telemetry(const char* ev, int friendId, const char* extra) {
+  Serial.printf("@{\"ev\":\"%s\",\"me\":\"%s\",\"friend\":\"%s\"%s}\n",
+                ev, NAMES[MY_ID], NAMES[friendId], extra);
+}
+
 // ============================ Radio ==================================
 
 // called every time a packet arrives
@@ -181,12 +218,16 @@ void onRecv(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
   r.everSeen   = true;
   r.lastSeen   = now;
   r.lighthouse = p.flags & FLAG_LIGHTHOUSE;
+  r.rawRssi    = rssi;
+  r.count++;
+  r.ackFor     = p.ackFor;
   portEXIT_CRITICAL(&mux);
 }
 
 void broadcast() {
   static uint32_t seq = 0; // keeps value between calls
-  Packet p = {MAGIC, MY_ID, (uint8_t)(myLighthouse ? FLAG_LIGHTHOUSE : 0), seq++};
+  Packet p = {MAGIC, MY_ID, (uint8_t)(myLighthouse ? FLAG_LIGHTHOUSE : 0), seq++,
+              (uint8_t)(ackedFor >= 0 ? ackedFor : NO_ACK)};
   esp_now_send(BCAST, (uint8_t*)&p, sizeof(p)); // sends 8 bytes to broadcast addr
 }
 
@@ -211,8 +252,9 @@ Zone nextZone(Zone cur, float r) {
 // At -90: (-90 + 90)/45 = 0; at -45: 45/45 = 1
 // constrain clamps anything outside this range
 // 0.0 = cold/far, 1.0 = hot/close
+// calFar/calNear start at HEAT_COLD/HEAT_HOT; calibrating on the phone replaces them
 float heat(float r) {
-  return constrain((r - HEAT_COLD) / float(HEAT_HOT - HEAT_COLD), 0.0f, 1.0f);
+  return constrain((r - calFar) / (calNear - calFar), 0.0f, 1.0f);
 }
 
 // packs 3 bytes into one 32-bit number: format the NeoPixel library uses for colors
@@ -291,7 +333,7 @@ void selectNextFriend(uint32_t now) {
 }
 
 void updateButtons(uint32_t now) {
-  // any press moves to enxt friend
+  // any press moves to next friend
   if (readButton(selectBtn, now) != NONE) selectNextFriend(now);
 
   Press p = readButton(beaconBtn, now);
@@ -303,16 +345,23 @@ void updateButtons(uint32_t now) {
     buzz(muted ? 1 : 2, 60, 80, TONE_UI);
     Serial.println(muted ? "Tether alerts muted" : "Tether alerts on");
   } else if (p == SHORT_PRESS) { // flips Lighthouse mode, records start time, gives a longer beep
-    myLighthouse = !myLighthouse;
-    lighthouseStart = now;
+    setLighthouse(!myLighthouse, false, now);
     buzz(1, 200, 0, TONE_UI);
-    Serial.println(myLighthouse ? "Lighthouse ON" : "Lighthouse OFF");
   }
+}
+
+void setLighthouse(bool on, bool fromPhone, uint32_t now) {
+  myLighthouse = on;
+  lighthouseStart = now;
+  lighthouseFromPhone = on && fromPhone;
+  myLighthouseAcked = false;
+  Serial.printf("Lighthouse %s%s\n", on ? "ON" : "OFF", fromPhone ? " (phone)" : "");
+  telemetry(on ? "my_sos" : "my_sos_end", selected, fromPhone ? ",\"from\":\"phone\"" : ",\"from\":\"button\"");
 }
 
 // ======================= Friend logic ================================
 
-// copies radio data from loop(), recording every friend excpet you
+// copies radio data from loop(), recording every friend except you
 void updateFriends(const RadioData* snap, uint32_t now) {
   for (int i = 0; i < NUM_DEVICES; i++) {
     if (i == MY_ID) continue;
@@ -321,6 +370,7 @@ void updateFriends(const RadioData* snap, uint32_t now) {
     bool heard = r.everSeen && (now - r.lastSeen < LOST_TIMEOUT_MS);
 
     // Zone
+    if (heard != (s.zone != Z_LOST)) telemetry(heard ? "found" : "lost", i, "");
     if (!heard)                s.zone = Z_LOST;
     else if (s.zone == Z_LOST) s.zone = rawZone(r.rssi); 
     else                       s.zone = nextZone(s.zone, r.rssi);
@@ -330,6 +380,9 @@ void updateFriends(const RadioData* snap, uint32_t now) {
     if (lh && !s.lhActive) {
       buzz(3, 300, 200, TONE_LIGHTHOUSE); // play three long beeps
       selectFriend(i, now); // automatically switch to tracking that friend
+      telemetry("friend_sos", i, "");
+    } else if (!lh && s.lhActive) {
+      telemetry("friend_sos_end", i, "");
     }
     s.lhActive = lh;
 
@@ -432,7 +485,7 @@ void drawLcd(const RadioData* snap, uint32_t now) {
 
   // Bottom row: my mode, or everyone else's status
   if (myLighthouse) {
-    snprintf(bottom, sizeof(bottom), "** BEACON ON **");
+    snprintf(bottom, sizeof(bottom), myLighthouseAcked ? "HELP IS COMING" : "** BEACON ON **");
   } else {
     int n = 0;
     bottom[0] = 0;
@@ -452,6 +505,136 @@ void drawLcd(const RadioData* snap, uint32_t now) {
   lcdRow(1, bottom);
 }
 
+// ============================ Phone page =============================
+// The page (index.html) knows one friend: whoever SELECT is tracking.
+// WebSocket contract: README.md, "WebSocket contract".
+
+void sendAll(const String& msg) {
+  if (ws.count()) ws.textAll(msg);
+}
+
+String statusJson() {
+  return String("{\"type\":\"status\",\"name\":\"") + NAMES[selected] + "\"}";
+}
+
+// Minimal JSON readers: the page only sends small flat objects
+String jsonType(const String& json) {
+  int k = json.indexOf("\"type\"");
+  if (k < 0) return "";
+  int q1 = json.indexOf('"', json.indexOf(':', k) + 1);
+  int q2 = json.indexOf('"', q1 + 1);
+  return (q1 < 0 || q2 < 0) ? "" : json.substring(q1 + 1, q2);
+}
+
+bool jsonInt(const String& json, const char* key, int& out) {
+  int k = json.indexOf(String("\"") + key + "\"");
+  if (k < 0) return false;
+  int c = json.indexOf(':', k);
+  if (c < 0) return false;
+  out = json.substring(c + 1).toInt();
+  return true;
+}
+
+// Messages arrive on the web server's task; they're queued and handled in loop()
+struct PhoneMsg { char text[96]; };
+QueueHandle_t phoneQueue;
+
+void onPhoneMessage(const String& msg) {
+  Serial.printf("< phone %s\n", msg.c_str());
+  String type = jsonType(msg);
+  uint32_t now = millis();
+  if (type == "sos") {
+    if (!myLighthouse) { setLighthouse(true, true, now); buzz(1, 200, 0, TONE_UI); }
+  } else if (type == "sos_cancel") {
+    if (myLighthouse) setLighthouse(false, true, now);
+  } else if (type == "sos_ack") {
+    if (pageSosFor >= 0) {
+      ackedFor = pageSosFor;
+      Serial.printf("Acknowledged %s's Lighthouse\n", NAMES[ackedFor]);
+      telemetry("friend_sos_acked", ackedFor, "");
+    }
+  } else if (type == "calibrate") {
+    int n, f;
+    if (jsonInt(msg, "near", n) && jsonInt(msg, "far", f) && n - f >= 5) {
+      calNear = n;
+      calFar = f;
+      Serial.printf("Calibrated from phone: near=%d far=%d\n", n, f);
+      char extra[40];
+      snprintf(extra, sizeof(extra), ",\"near\":%d,\"far\":%d", n, f);
+      telemetry("calibrate", selected, extra);
+    }
+  }
+}
+
+void onWsEvent(AsyncWebSocket*, AsyncWebSocketClient* client, AwsEventType type,
+               void* arg, uint8_t* data, size_t len) {
+  if (type == WS_EVT_CONNECT) {
+    Serial.printf("+ phone #%u\n", client->id());
+    client->text(statusJson());
+    // a phone that (re)connects mid-alert still needs to see it
+    if (pageSosFor >= 0 && ackedFor != pageSosFor) client->text("{\"type\":\"sos\"}");
+    if (myLighthouse && myLighthouseAcked) client->text("{\"type\":\"sos_ack\"}");
+  } else if (type == WS_EVT_DISCONNECT) {
+    Serial.printf("- phone #%u\n", client->id());
+  } else if (type == WS_EVT_DATA) {
+    AwsFrameInfo* info = (AwsFrameInfo*)arg;
+    if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
+      PhoneMsg m = {};
+      memcpy(m.text, data, min(len, sizeof(m.text) - 1));
+      xQueueSend(phoneQueue, &m, 0);
+    }
+  }
+}
+
+void updatePhone(const RadioData* snap, uint32_t now) {
+  static uint32_t lastStatus = 0, sentCount = 0;
+  static int shownFriend = -1;
+
+  PhoneMsg m;
+  while (xQueueReceive(phoneQueue, &m, 0) == pdTRUE) onPhoneMessage(m.text);
+
+  // Friend changed: tell the page right away so the name updates
+  if (selected != shownFriend || now - lastStatus >= 1000) {
+    shownFriend = selected;
+    lastStatus = now;
+    sendAll(statusJson());
+  }
+
+  // Every new packet from the selected friend -> raw RSSI
+  if (snap[selected].count != sentCount) {
+    sentCount = snap[selected].count;
+    sendAll(String("{\"type\":\"rssi\",\"rssi\":") + snap[selected].rawRssi + "}");
+#if RSSI_DEBUG
+    // raw = this one packet, filtered = smoothed average (what zones and LEDs use)
+    Serial.printf("%s raw=%d filtered=%.1f\n", NAMES[selected], snap[selected].rawRssi, snap[selected].rssi);
+#endif
+  }
+
+  // Friend's Lighthouse -> SOS on the page (updateFriends auto-selects them)
+  if (pageSosFor < 0 && state[selected].lhActive && ackedFor != selected) {
+    pageSosFor = selected;
+    sendAll("{\"type\":\"sos\"}");
+  } else if (pageSosFor >= 0 && !state[pageSosFor].lhActive) {
+    if (ackedFor == pageSosFor) ackedFor = -1;
+    pageSosFor = -1;
+    sendAll("{\"type\":\"sos_clear\"}");
+  }
+  if (ackedFor >= 0 && !state[ackedFor].lhActive) ackedFor = -1;
+
+  // A friend's phone acknowledged my Lighthouse
+  if (myLighthouse && !myLighthouseAcked) {
+    for (int i = 0; i < NUM_DEVICES; i++) {
+      if (i == MY_ID || state[i].zone == Z_LOST || snap[i].ackFor != MY_ID) continue;
+      myLighthouseAcked = true;
+      sendAll("{\"type\":\"sos_ack\"}");
+      buzz(3, 80, 80, TONE_SELECT);
+      Serial.printf("%s acknowledged your Lighthouse\n", NAMES[i]);
+      telemetry("my_sos_acked", i, "");
+      break;
+    }
+  }
+}
+
 // ========================= Serial calibration ========================
 
 void logSerial(const RadioData* snap, uint32_t now) {
@@ -464,6 +647,18 @@ void logSerial(const RadioData* snap, uint32_t now) {
                   state[i].lhActive ? " LH" : "");
   }
   Serial.println();
+}
+
+// latest RSSI of every friend heard since the last call -> bridge readings
+void logTelemetry(const RadioData* snap) {
+  static uint32_t lastCount[NUM_DEVICES] = {};
+  for (int i = 0; i < NUM_DEVICES; i++) {
+    if (i == MY_ID || snap[i].count == lastCount[i]) continue;
+    lastCount[i] = snap[i].count;
+    char extra[16];
+    snprintf(extra, sizeof(extra), ",\"rssi\":%d", snap[i].rawRssi);
+    telemetry("rssi", i, extra);
+  }
 }
 
 // ============================ Setup / loop ===========================
@@ -497,9 +692,12 @@ void setup() {
     Serial.println("LCD not found — continuing without display");
   }
 
-  WiFi.mode(WIFI_STA); // station mode switches radio on for ESP-NOW
-  WiFi.disconnect(); // makes sure board isn't trying to join saved network
-  esp_wifi_set_channel(WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE); // fixes channel, 20 MHz width
+  // AP+STA: the hotspot serves the phone page, and ESP-NOW rides on the hotspot's channel
+  char ssid[32];
+  snprintf(ssid, sizeof(ssid), "Crowdsource-%s", NAMES[MY_ID]);
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.setSleep(false); // keeps ESP-NOW and the phone link responsive
+  WiFi.softAP(ssid, AP_PASSWORD, WIFI_CHANNEL);
   WiFi.setTxPower(TX_POWER); // set transmit power
 
   if (esp_now_init() != ESP_OK) { // starts ESP-NOW
@@ -510,10 +708,23 @@ void setup() {
 
   esp_now_peer_info_t peer = {};
   memcpy(peer.peer_addr, BCAST, 6);
-  peer.channel = WIFI_CHANNEL;
-  peer.ifidx   = WIFI_IF_STA;
+  peer.channel = 0;            // whatever channel the hotspot is on
+  peer.ifidx   = WIFI_IF_AP;
   peer.encrypt = false;
   if (esp_now_add_peer(&peer) != ESP_OK) Serial.println("Failed to add broadcast peer");
+
+  phoneQueue = xQueueCreate(8, sizeof(PhoneMsg));
+  ws.onEvent(onWsEvent);
+  server.addHandler(&ws);
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest* req) {
+    AsyncWebServerResponse* res = req->beginResponse(200, "text/html", INDEX_HTML_GZ, INDEX_HTML_GZ_LEN);
+    res->addHeader("Content-Encoding", "gzip");
+    res->addHeader("Cache-Control", "no-store");
+    req->send(res);
+  });
+  server.onNotFound([](AsyncWebServerRequest* req) { req->send(404, "text/plain", "not found"); });
+  server.begin();
+  Serial.printf("Phone: join Wi-Fi \"%s\", then open http://%s\n", ssid, WiFi.softAPIP().toString().c_str());
 
   delay(500);
   selectFriend(selected, millis());   // flash first friend's color on boot
@@ -521,12 +732,12 @@ void setup() {
 }
 
 void loop() {
-  static uint32_t nextBroadcast = 0, lastLed = 0, lastLcd = 0, lastLog = 0;
+  static uint32_t nextBroadcast = 0, lastLed = 0, lastLcd = 0, lastLog = 0, lastTele = 0, lastClean = 0;
   uint32_t now = millis();
 
   // handles button presses, switches Lighthouse mode off after 60s and mute off after 2 min
   updateButtons(now);
-  if (myLighthouse && now - lighthouseStart > LIGHTHOUSE_MS) myLighthouse = false;
+  if (myLighthouse && !lighthouseFromPhone && now - lighthouseStart > LIGHTHOUSE_MS) setLighthouse(false, false, now);
   if (muted && now - muteStart > MUTE_MS) muted = false;
 
   // sends a packet when it's due
@@ -541,14 +752,17 @@ void loop() {
   memcpy(snap, radio, sizeof(snap));
   portEXIT_CRITICAL(&mux);
 
-  // zomes, Lighthouse, and tether alerts are updated, buzzer pattern advances
+  // zones, Lighthouse, and tether alerts are updated, buzzer pattern advances
   updateFriends(snap, now);
+  updatePhone(snap, now);
   updateBuzzer(now);
 
 // rate-limited tasks: LEDs at 50 Hz, Serial log at 2 Hz
   if (now - lastLed >= 20)            { drawLeds(snap, now); lastLed = now; }
   if (lcdOK && now - lastLcd >= 200)  { drawLcd(snap, now); lastLcd = now; }
-  if (now - lastLog >= 500)           { logSerial(snap, now); lastLog = now; }
+  if (!RSSI_DEBUG && now - lastLog >= 500) { logSerial(snap, now); lastLog = now; }
+  if (now - lastTele >= 500)          { logTelemetry(snap); lastTele = now; }
+  if (now - lastClean >= 1000)      { ws.cleanupClients(); lastClean = now; }
 }
 
 // Notes:
@@ -556,5 +770,5 @@ void loop() {
 // fire at the same time, you only hear one of them
 // long press only register when you release button
 // unused seq field
-// while the screen refreshes, the loops pauses for about 20 ms, so don't move OLED refresh
+// while the screen refreshes, the loops pauses for about 20 ms, so don't move LCD refresh
 // into 50 Hz LED block

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Gzip index.html into a C header so the sketch can serve it from flash.
 
-Writes index_html.h into every sketch folder under firmware/. Run after every change to index.html:
+Writes index_html.h into every sketch folder that includes it. Run after every change to index.html:
     python3 firmware/embed_html.py
 """
 import gzip
@@ -9,7 +9,8 @@ import pathlib
 
 root = pathlib.Path(__file__).resolve().parent.parent
 src = root / "index.html"
-sketches = sorted(p.parent for p in (root / "firmware").glob("*/*.ino"))
+sketches = sorted({p.parent for p in [*root.glob("firmware/*/*.ino"), *root.glob("crowd_source/*.ino")]
+                   if '"index_html.h"' in p.read_text()})
 
 raw = src.read_bytes()
 gz = gzip.compress(raw, compresslevel=9, mtime=0)

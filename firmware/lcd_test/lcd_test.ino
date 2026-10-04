@@ -4,7 +4,7 @@
 
 #define BTN_A  12
 #define BTN_B  13
-#define BUZZER 25
+#define BUZZER 14
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
