@@ -4,13 +4,15 @@
 
 <p align="center"><b>Safety simplified. Always chart your course in a crowd.</b></p>
 
+<p align="center">🏆 Winner, <b>MLH Best Use of Tiger Data</b> at BigRed//Hacks 2026</p>
+
 Crowd Course is for the moment a crowd separates two people and the phone stops being a way back. At a show, a campus night, or a packed exit, the cell network clogs, GPS cannot tell "beside you" from "across the room," and a dead battery ends the search. That hits hardest when someone cannot stand there staring at a map: they need their eyes on the crowd, their phone died, or they only have a borrowed one.
 
 Each person wears an ESP32 bracelet. It listens for its friends over ESP-NOW and glows from blue to red as they get closer, so the search stays on the wrist. Either person can start Lighthouse, an SOS that strobes every friend's strip in their color, beeps them, and points their bracelets at whoever needs help. The phone joins that bracelet's Wi-Fi and opens a page the bracelet serves: a 0–100 closeness score, the SOS control, and a full-screen alert. No internet, no account, no app. A borrowed phone is enough.
 
 The score is learned from this pair, in this room. Stand together, then step apart. A slow change means someone is walking. A sharp drop, while the beacons keep arriving, means a person stepped between them, and the number holds so nobody walks the wrong way.
 
-One bracelet can stay plugged into a laptop or a Raspberry Pi: the aid station. That screen is for the friend or staff member trying to help: who is apart, how they came apart, who raised SOS. It also answers questions over iMessage. Finding each other never depends on it.
+One bracelet can stay plugged into a laptop: the aid station. That screen is for whoever's helping: who is apart, how they came apart, who raised SOS. It also answers questions over iMessage. Finding each other never depends on it.
 
 ## How it fits together
 
@@ -26,7 +28,7 @@ flowchart LR
     PB <-->|bracelet Wi-Fi + WebSocket| B
   end
 
-  subgraph station["Aid station (laptop or Raspberry Pi)"]
+  subgraph station["Aid station (laptop)"]
     BR["Bridge<br/>bridge/bridge.js"]
     WEB["Dashboard server<br/>web/server.js"]
   end
@@ -78,7 +80,7 @@ npm install
 npm run station          # bridge + dashboard, http://<address>:8787
 ```
 
-Plug **one** bracelet into USB and leave it there. The other bracelet is the one that walks. On a Raspberry Pi, your user needs the serial port (`sudo usermod -aG dialout $USER`, then log back in); it is usually `/dev/ttyUSB0`. Open the dashboard from a phone on the **same network as the station**. A phone joined to a bracelet's hotspot cannot see it.
+Plug **one** bracelet into USB and leave it there. The other bracelet is the one that walks. On Linux, your user needs the serial port (`sudo usermod -aG dialout $USER`, then log back in); it is usually `/dev/ttyUSB0`. Open the dashboard from a phone on the **same network as the station**. A phone joined to a bracelet's hotspot cannot see it.
 
 ### Tiger Data
 
